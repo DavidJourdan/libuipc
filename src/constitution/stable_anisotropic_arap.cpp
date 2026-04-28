@@ -22,14 +22,14 @@ StableAnisotropicARAP::StableAnisotropicARAP(const Json& config) noexcept
 {
 }
 
-void StableAnisotropicARAP::apply_to(geometry::SimplicialComplex& sc, Vector3 direction, Float mu) const
+void StableAnisotropicARAP::apply_to(geometry::SimplicialComplex& sc, Vector3 direction, Float anisotropy_modulus) const
 {
     UIPC_ASSERT(sc.dim() == 3, "StableAnisotropicARAP only supports 3D simplicial complex");
 
-    auto mu_attr = sc.tetrahedra().find<Float>("mu");
+    auto mu_attr = sc.tetrahedra().find<Float>("anisotropy_modulus");
     if(!mu_attr)
-        mu_attr = sc.tetrahedra().create<Float>("mu", mu);
-    std::ranges::fill(geometry::view(*mu_attr), mu);
+        mu_attr = sc.tetrahedra().create<Float>("anisotropy_modulus", anisotropy_modulus);
+    std::ranges::fill(geometry::view(*mu_attr), anisotropy_modulus);
 
     auto direction_attr = sc.tetrahedra().find<Vector3>("direction");
     if(!direction_attr)

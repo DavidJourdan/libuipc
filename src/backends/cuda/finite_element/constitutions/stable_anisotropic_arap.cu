@@ -56,7 +56,7 @@ class StableAnisotropicARAP final : public FEM3DConstitution
             geo_slots,
             [](geometry::SimplicialComplex& sc) -> auto
             {
-                auto mu        = sc.tetrahedra().find<Float>("mu");
+                auto mu        = sc.tetrahedra().find<Float>("anisotropy_modulus");
                 auto direction = sc.tetrahedra().find<Vector3>("direction");
 
                 return zip(mu->view(), direction->view());
@@ -97,7 +97,7 @@ class StableAnisotropicARAP final : public FEM3DConstitution
                    {
                        const Vector4i&  tet       = indices(I);
                        const Matrix3x3& Dm_inv    = Dm_invs(I);
-                       Float            mu        = mus(I);
+                       Float            anisotropy_modulus        = mus(I);
                        Vector3          direction = directions(I);
 
                        const Vector3& x0 = xs(tet(0));
@@ -109,7 +109,7 @@ class StableAnisotropicARAP final : public FEM3DConstitution
 
                        Float E;
 
-                       SAA::E(E, mu, direction, F);
+                       SAA::E(E, anisotropy_modulus, direction, F);
                        E *= dt * dt * volumes(I);
                        energies(I) = E;
                    });
@@ -137,7 +137,7 @@ class StableAnisotropicARAP final : public FEM3DConstitution
                    {
                        const Vector4i&  tet       = indices(I);
                        const Matrix3x3& Dm_inv    = Dm_invs(I);
-                       Float            mu        = mus(I);
+                       Float            anisotropy_modulus        = mus(I);
                        Vector3          direction = directions(I);
 
                        const Vector3& x0 = xs(tet(0));
@@ -150,7 +150,7 @@ class StableAnisotropicARAP final : public FEM3DConstitution
                        auto Vdt2 = volumes(I) * dt * dt;
 
                        Matrix3x3 dEdF;
-                       SAA::dEdVecF(dEdF, mu, direction, F);
+                       SAA::dEdVecF(dEdF, anisotropy_modulus, direction, F);
                        auto VecdEdF = flatten(dEdF);
                        VecdEdF *= Vdt2;
 
@@ -164,7 +164,7 @@ class StableAnisotropicARAP final : public FEM3DConstitution
                            return;
 
                        Matrix9x9 ddEddF;
-                       SAA::ddEddVecF(ddEddF, mu, direction, F);
+                       SAA::ddEddVecF(ddEddF, anisotropy_modulus, direction, F);
                        ddEddF *= Vdt2;
                        make_spd(ddEddF);
                        Matrix12x12 H = dFdx.transpose() * ddEddF * dFdx;

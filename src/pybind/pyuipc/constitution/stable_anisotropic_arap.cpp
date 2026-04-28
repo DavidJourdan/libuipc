@@ -26,15 +26,15 @@ Returns:
                                [](StableAnisotropicARAP& self,
                                   SimplicialComplex& sc,
                                   py::array_t<Float> direction,
-                                  Float mu)
-                               { self.apply_to(sc, to_matrix<Vector3>(direction), mu); },
+                                  Float anisotropy_modulus)
+                               { self.apply_to(sc, to_matrix<Vector3>(direction), anisotropy_modulus); },
                                py::arg("sc"),
                                py::arg("direction"),
-                               py::arg("mu") = 120.0_kPa,
+                               py::arg("anisotropy_modulus") = 120.0_kPa,
                                R"(Apply StableAnisotropicARAP constitution to a simplicial complex.
 Args:
     sc: SimplicialComplex to apply to.
     direction: orientation of the anisotropic material
-    mu: directional modulus (default: 120.0 kPa).)");
+    anisotropy_modulus: directional modulus (default: 120.0 kPa).)");
 }
 }  // namespace pyuipc::constitution
