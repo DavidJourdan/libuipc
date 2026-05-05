@@ -143,4 +143,9 @@ span<const Float> FiniteElementExtraConstitution::FilteredInfo::thicknesses() no
 {
     return m_impl->fem().h_thicknesses;
 }
+
+FiniteElementMethod::Impl& FiniteElementExtraConstitution::fem() noexcept
+{
+    return m_impl.fem();
+}
 }  // namespace uipc::backend::cuda

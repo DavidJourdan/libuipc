@@ -126,6 +126,7 @@ class FiniteElementExtraConstitution : public SimSystem
 
     friend class FiniteElementExtraConstitutionDiffParmReporter;
     span<const FiniteElementMethod::GeoInfo> geo_infos() const noexcept;
+    FiniteElementMethod::Impl& fem() noexcept;
 
   private:
     friend class FiniteElementConstitutionLinearSubsystemReporter;
