@@ -24,6 +24,8 @@ StableAnisotropicARAP::StableAnisotropicARAP(const Json& config) noexcept
 
 void StableAnisotropicARAP::apply_to(geometry::SimplicialComplex& sc, Vector3 direction, Float anisotropy_modulus) const
 {
+    Base::apply_to(sc);
+
     UIPC_ASSERT(sc.dim() == 3, "StableAnisotropicARAP only supports 3D simplicial complex");
 
     auto mu_attr = sc.tetrahedra().find<Float>("anisotropy_modulus");

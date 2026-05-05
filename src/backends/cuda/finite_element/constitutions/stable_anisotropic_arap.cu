@@ -1,4 +1,4 @@
-#include <finite_element/fem_3d_constitution.h>
+#include <finite_element/fem_3d_extra_constitution.h>
 #include <finite_element/constitutions/stable_anisotropic_arap_function.h>
 #include <finite_element/fem_utils.h>
 #include <kernel_cout.h>
@@ -10,7 +10,7 @@
 
 namespace uipc::backend::cuda
 {
-class StableAnisotropicARAP final : public FEM3DConstitution
+class StableAnisotropicARAP final : public FEM3DExtraConstitution
 {
   public:
     // Constitution UID by libuipc specification
@@ -18,7 +18,7 @@ class StableAnisotropicARAP final : public FEM3DConstitution
     static constexpr SizeT StencilSize     = 4;
     static constexpr SizeT HalfHessianSize = StencilSize * (StencilSize + 1) / 2;
 
-    using FEM3DConstitution::FEM3DConstitution;
+    using FEM3DExtraConstitution::FEM3DExtraConstitution;
 
     vector<Float> h_mus;
     vector<Vector3> h_directions;
@@ -41,21 +41,22 @@ class StableAnisotropicARAP final : public FEM3DConstitution
         info.hessian_count(mus.size() * HalfHessianSize);
     }
 
-    virtual void do_init(FiniteElementMethod::FilteredInfo& info) override
+    virtual void do_init(FiniteElementExtraConstitution::FilteredInfo& info) override
     {
         using ForEachInfo = FiniteElementMethod::ForEachInfo;
 
         auto geo_slots = world().scene().geometries();
 
-        auto N = info.primitive_count();
-
-        h_mus.resize(N);
-        h_directions.resize(N);
+        size_t primitive_count = 0;
 
         info.for_each(
             geo_slots,
-            [](geometry::SimplicialComplex& sc) -> auto
+            [&](geometry::SimplicialComplex& sc) -> auto
             {
+                primitive_count += sc.tetrahedra().size();
+                h_mus.resize(primitive_count);
+                h_directions.resize(primitive_count);
+
                 auto mu        = sc.tetrahedra().find<Float>("anisotropy_modulus");
                 auto direction = sc.tetrahedra().find<Vector3>("direction");
 
@@ -71,10 +72,10 @@ class StableAnisotropicARAP final : public FEM3DConstitution
                 h_directions[vI] = direction;
             });
 
-        mus.resize(N);
+        mus.resize(primitive_count);
         mus.view().copy_from(h_mus.data());
 
-        directions.resize(N);
+        directions.resize(primitive_count);
         directions.view().copy_from(h_directions.data());
     }
 

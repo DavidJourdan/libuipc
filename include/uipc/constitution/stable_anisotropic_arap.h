@@ -1,13 +1,13 @@
 #pragma once
-#include <uipc/constitution/finite_element_constitution.h>
+#include <uipc/constitution/finite_element_extra_constitution.h>
 #include <uipc/constitution/elastic_moduli.h>
 #include <uipc/common/unit.h>
 
 namespace uipc::constitution
 {
-class UIPC_CONSTITUTION_API StableAnisotropicARAP : public FiniteElementConstitution
+class UIPC_CONSTITUTION_API StableAnisotropicARAP : public FiniteElementExtraConstitution
 {
-    using Base = FiniteElementConstitution;
+    using Base = FiniteElementExtraConstitution;
 
   public:
     StableAnisotropicARAP(const Json& config = default_config()) noexcept;
