@@ -8,6 +8,7 @@
 #include <pyuipc/constitution/neo_hookean_shell.h>
 #include <pyuipc/constitution/strain_limiting_baraff_witkin.h>
 #include <pyuipc/constitution/stable_neo_hookean.h>
+#include <pyuipc/constitution/muscle.h>
 #include <pyuipc/constitution/stable_anisotropic_arap.h>
 #include <pyuipc/constitution/affine_body_constitution.h>
 #include <pyuipc/constitution/affine_body_shell.h>
@@ -76,6 +77,7 @@ PyModule::PyModule(py::module& m)
     PyStrainLimitingBaraffWitkinShell{m};
     PyStableNeoHookean{m};
     PyStableAnisotropicARAP{m};
+    PyMuscle{m};
     PyARAP{m};
 
     // Finite Extra Constitutions
