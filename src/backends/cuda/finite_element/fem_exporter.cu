@@ -8,7 +8,7 @@ namespace uipc::backend::cuda
 //     return get_prim_type();
 // }
 
-std::string_view FEMExporter::uid() const noexcept
+U64 FEMExporter::uid() const noexcept
 {
     return get_uid();
 }
@@ -23,18 +23,18 @@ void FEMExporter::do_build()
     manager.add_exporter(this);
 }
 
-void FEMExporter::fem_energy(std::string_view uid, geometry::Geometry& energy)
+void FEMExporter::fem_energy(geometry::Geometry& energy)
 {
-    get_fem_energy(uid, energy);
+    get_fem_energy(energy);
 }
 
-void FEMExporter::fem_gradient(std::string_view uid, geometry::Geometry& vert_grad)
+void FEMExporter::fem_gradient(geometry::Geometry& vert_grad)
 {
-    get_fem_gradient(uid, vert_grad);
+    get_fem_gradient(vert_grad);
 }
 
-void FEMExporter::fem_hessian(std::string_view uid, geometry::Geometry& vert_hess)
+void FEMExporter::fem_hessian(geometry::Geometry& vert_hess)
 {
-    get_fem_hessian(uid, vert_hess);
+    get_fem_hessian(vert_hess);
 }
 }  // namespace uipc::backend::cuda

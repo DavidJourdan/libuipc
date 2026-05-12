@@ -7,6 +7,7 @@
 #include <muda/ext/eigen/evd.h>
 #include <utils/make_spd.h>
 #include <utils/matrix_assembler.h>
+#include <finite_element/fem_exporter.h>
 
 namespace uipc::backend::cuda
 {
@@ -183,4 +184,110 @@ class StableNeoHookean3D final : public FEM3DConstitution
 };
 
 REGISTER_SIM_SYSTEM(StableNeoHookean3D);
+
+class StableNeoHookean3DFEMExporter final : public FEMExporter
+{
+  public:
+    using FEMExporter::FEMExporter;
+
+    SimSystemSlot<FEM3DConstitution> fem_constitution;
+
+    // ------------------------------------------------------------------
+    // Identity — must match uipc::constitution::StableNeoHookean::constitution_uid()
+    // Grep: src/constitution/stable_neo_hookean.cpp for constitution_uid()
+    // ------------------------------------------------------------------
+    U64 get_uid() const noexcept override
+    {
+        return StableNeoHookean3D::ConstitutionUID;
+    }
+
+    void do_build(BuildInfo&) override
+    {
+        fem_constitution = require<FEM3DConstitution>(QueryOptions{.exact = false});
+    }
+
+    // ------------------------------------------------------------------
+    // Energy  —  one Float per tet, plus tet topology
+    //
+    // Geometry layout after call:
+    //   energy_geo.instances()[t] = { "topo": Vector4i, "energy": Float }
+    //   t = 0 … N_tets-1
+    // ------------------------------------------------------------------
+    void get_fem_energy(geometry::Geometry& energy_geo) override
+    {
+        auto indices  = fem_constitution->element_indices();   // CBufferView<Vector4i>
+        auto energies = fem_constitution->element_energies();  // CBufferView<Float>
+
+        energy_geo.instances().resize(indices.size());
+
+        // Topology
+        auto topo = energy_geo.instances().find<Vector4i>("topo");
+        if(!topo)
+            topo = energy_geo.instances().create<Vector4i>("topo", Vector4i::Zero());
+        auto topo_view = view(*topo);
+        indices.copy_to(topo_view.data());
+
+        // Per-element energy
+        auto energy = energy_geo.instances().find<Float>("energy");
+        if(!energy)
+            energy = energy_geo.instances().create<Float>("energy", 0.0f);
+        auto energy_view = view(*energy);
+        energies.copy_to(energy_view.data());
+    }
+
+    // ------------------------------------------------------------------
+    // Gradient — doublet set: (i: IndexT, grad: Vector3)
+    //   N_doublets = 4 * N_tets  (one per tet-corner vertex)
+    //   Elastic force on vertex i = -sum of all grad entries with index i
+    // ------------------------------------------------------------------
+    void get_fem_gradient(geometry::Geometry& grad_geo) override
+    {
+        auto grads = fem_constitution->element_gradients();  // CDoubletVectorView<Float,3>
+
+        grad_geo.instances().resize(grads.doublet_count());
+
+        auto i = grad_geo.instances().find<IndexT>("i");
+        if(!i)
+            i = grad_geo.instances().create<IndexT>("i", -1);
+        auto i_view = view(*i);
+        grads.indices().copy_to(i_view.data());
+
+        auto grad = grad_geo.instances().find<Vector3>("grad");
+        if(!grad)
+            grad = grad_geo.instances().create<Vector3>("grad", Vector3::Zero());
+        auto grad_view = view(*grad);
+        grads.values().copy_to(grad_view.data());
+    }
+
+    // ------------------------------------------------------------------
+    // Hessian — triplet set: (i: IndexT, j: IndexT, hess: Matrix3x3)
+    //   N_triplets = 16 * N_tets  (4×4 blocks per tet, off-diagonal included)
+    // ------------------------------------------------------------------
+    void get_fem_hessian(geometry::Geometry& hess_geo) override
+    {
+        auto hess = fem_constitution->element_hessians();  // CTripletMatrixView<Float,3>
+
+        hess_geo.instances().resize(hess.triplet_count());
+
+        auto i = hess_geo.instances().find<IndexT>("i");
+        if(!i)
+            i = hess_geo.instances().create<IndexT>("i", -1);
+        auto i_view = view(*i);
+        hess.row_indices().copy_to(i_view.data());
+
+        auto j = hess_geo.instances().find<IndexT>("j");
+        if(!j)
+            j = hess_geo.instances().create<IndexT>("j", -1);
+        auto j_view = view(*j);
+        hess.col_indices().copy_to(j_view.data());
+
+        auto h = hess_geo.instances().find<Matrix3x3>("hess");
+        if(!h)
+            h = hess_geo.instances().create<Matrix3x3>("hess", Matrix3x3::Zero());
+        auto h_view = view(*h);
+        hess.values().copy_to(h_view.data());
+    }
+};
+
+REGISTER_SIM_SYSTEM(StableNeoHookean3DFEMExporter);
 }  // namespace uipc::backend::cuda

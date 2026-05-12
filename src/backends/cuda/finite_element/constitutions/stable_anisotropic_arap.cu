@@ -1,10 +1,7 @@
 #include <finite_element/fem_3d_extra_constitution.h>
 #include <finite_element/constitutions/stable_anisotropic_arap_function.h>
 #include <finite_element/fem_utils.h>
-#include <kernel_cout.h>
-#include <muda/ext/eigen/log_proxy.h> // remove?
 #include <Eigen/Dense>
-#include <muda/ext/eigen/evd.h> // remove?
 #include <utils/make_spd.h>
 #include <utils/matrix_assembler.h>
 

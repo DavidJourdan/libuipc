@@ -9,17 +9,11 @@ namespace uipc::core
 class UIPC_CORE_API FEMSystemFeatureOverrider
 {
   public:
-    virtual void get_fem_energy(std::string_view    prim_type,
-                                    geometry::Geometry& energy_geo) = 0;
+    virtual void get_fem_energy(U64 uid, geometry::Geometry& energy_geo) = 0;
 
-    virtual void get_fem_gradient(std::string_view    prim_type,
-                                      geometry::Geometry& vert_grad) = 0;
+    virtual void get_fem_gradient(U64 uid, geometry::Geometry& vert_grad) = 0;
 
-    virtual void get_fem_hessian(std::string_view    prim_type,
-                                     geometry::Geometry& vert_hess) = 0;
-
-
-    virtual vector<std::string> get_fem_primitive_types() const = 0;
+    virtual void get_fem_hessian(U64 uid, geometry::Geometry& vert_hess) = 0;
 };
 
 class UIPC_CORE_API FEMSystemFeature final : public Feature
@@ -29,11 +23,11 @@ class UIPC_CORE_API FEMSystemFeature final : public Feature
 
     FEMSystemFeature(S<FEMSystemFeatureOverrider> overrider);
 
-    void fem_energy(std::string_view prim_type, geometry::Geometry& energy);
+    void fem_energy(U64 uid, geometry::Geometry& energy);
 
-    void fem_gradient(std::string_view prim_type, geometry::Geometry& vert_grad);
+    void fem_gradient(U64 uid, geometry::Geometry& vert_grad);
 
-    void fem_hessian(std::string_view prim_type, geometry::Geometry& vert_hess);
+    void fem_hessian(U64 uid, geometry::Geometry& vert_hess);
 
     void fem_energy(const constitution::IConstitution& c, geometry::Geometry& energy);
 
@@ -44,7 +38,7 @@ class UIPC_CORE_API FEMSystemFeature final : public Feature
     vector<std::string> fem_primitive_types() const;
 
   private:
-    virtual std::string_view         get_name() const override;
+    virtual std::string_view     get_name() const override;
     S<FEMSystemFeatureOverrider> m_impl;
 };
 }  // namespace uipc::core

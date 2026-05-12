@@ -12,11 +12,9 @@ class FEMSystemFeatureOverrider final : public core::FEMSystemFeatureOverrider
     FEMSystemFeatureOverrider(FEMExporterManager* fem_system);
 
   private:
-    vector<std::string> get_fem_primitive_types() const override;
-
-    void get_fem_gradient(std::string_view prim_type, geometry::Geometry& vert_grad) override;
-    void get_fem_hessian(std::string_view prim_type, geometry::Geometry& vert_hess) override;
-    void get_fem_energy(std::string_view prim_type, geometry::Geometry& prims) override;
+    void get_fem_gradient(U64 uid, geometry::Geometry& vert_grad) override;
+    void get_fem_hessian(U64 uid, geometry::Geometry& vert_hess) override;
+    void get_fem_energy(U64 uid, geometry::Geometry& prims) override;
 
     SimSystemSlot<FEMExporterManager> m_manager;
 };

@@ -8,6 +8,11 @@ class FEM3DConstitution : public FiniteElementConstitution
   public:
     using FiniteElementConstitution::FiniteElementConstitution;
 
+    muda::CBufferView<Vector4i>        element_indices()   const noexcept;
+    muda::CBufferView<Float>           element_energies()  const noexcept;
+    muda::CDoubletVectorView<Float, 3> element_gradients() const noexcept;
+    muda::CTripletMatrixView<Float, 3> element_hessians()  const noexcept;
+
     class BuildInfo
     {
       public:
@@ -93,5 +98,10 @@ class FEM3DConstitution : public FiniteElementConstitution
     virtual void do_compute_gradient_hessian(
         FiniteElementConstitution::ComputeGradientHessianInfo& info) override final;
     virtual IndexT get_dim() const noexcept override final;
+
+    muda::CBufferView<Vector4i>        m_element_indices;
+    muda::CBufferView<Float>           m_element_energies;
+    muda::CDoubletVectorView<Float, 3> m_element_gradients;
+    muda::CTripletMatrixView<Float, 3> m_element_hessians;
 };
 }  // namespace uipc::backend::cuda

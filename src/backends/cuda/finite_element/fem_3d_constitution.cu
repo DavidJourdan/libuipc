@@ -12,6 +12,12 @@ void FEM3DConstitution::do_compute_energy(FiniteElementConstitution::ComputeEner
 {
     FEM3DConstitution::ComputeEnergyInfo this_info{
         this, m_index_in_dim, info.dt(), info.energies()};
+
+    // Capture: muda::BufferView<Float> → muda::CBufferView<Float> (implicit)
+    m_element_energies = this_info.energies();
+    // Topology is stable; capture once. Subsequent overwrites are harmless.
+    m_element_indices = this_info.indices();
+
     do_compute_energy(this_info);
 }
 
@@ -19,6 +25,12 @@ void FEM3DConstitution::do_compute_gradient_hessian(FiniteElementConstitution::C
 {
     FEM3DConstitution::ComputeGradientHessianInfo this_info{
         this, m_index_in_dim, info.gradient_only(), info.dt(), info.gradients(), info.hessians()};
+
+    // Capture: DoubletVectorView → CDoubletVectorView (implicit)
+    m_element_gradients = this_info.gradients();
+    // Only valid when gradient_only == false; exporter must check.
+    m_element_hessians = this_info.hessians();
+
     do_compute_gradient_hessian(this_info);
 }
 
@@ -58,5 +70,25 @@ muda::CBufferView<Float> FEM3DConstitution::BaseInfo::rest_volumes() const noexc
 const FiniteElementMethod::ConstitutionInfo& FEM3DConstitution::BaseInfo::constitution_info() const noexcept
 {
     return m_impl->constitution_info();
+}
+
+muda::CBufferView<Vector4i> FEM3DConstitution::element_indices() const noexcept
+{
+    return m_element_indices;
+}
+
+muda::CBufferView<Float> FEM3DConstitution::element_energies() const noexcept
+{
+    return m_element_energies;
+}
+
+muda::CDoubletVectorView<Float, 3> FEM3DConstitution::element_gradients() const noexcept
+{
+    return m_element_gradients;
+}
+
+muda::CTripletMatrixView<Float, 3> FEM3DConstitution::element_hessians() const noexcept
+{
+    return m_element_hessians;
 }
 }  // namespace uipc::backend::cuda

@@ -23,8 +23,8 @@ void FEMExporterManager::init()
 
     for(auto&& [i, exporter] : enumerate(exporters))
     {
-        auto uid = std::string{exporter->uid()};
-        auto it        = m_exporter_map.find(uid);
+        U64 uid = exporter->uid();
+        auto it  = m_exporter_map.find(uid);
         if(it != m_exporter_map.end())
         {
             logger::warn("FEM exporter for primitive type '{}'<{}> already exists, overwriting with <{}>.",
@@ -42,37 +42,29 @@ void FEMExporterManager::init()
     }
 }
 
-void FEMExporterManager::get_fem_energy(std::string_view    uid,
-                                                geometry::Geometry& prim_energy)
+void FEMExporterManager::get_fem_energy(U64 uid, geometry::Geometry& prim_energy)
 {
     auto exporter = find_exporter(uid);
     if(!exporter)
         return;
-    exporter->fem_energy(uid, prim_energy);
+    exporter->fem_energy(prim_energy);
 }
 
-void FEMExporterManager::get_fem_gradient(std::string_view    uid,
-                                                  geometry::Geometry& prim_grad)
+void FEMExporterManager::get_fem_gradient(U64 uid, geometry::Geometry& prim_grad)
 {
     auto exporter = find_exporter(uid);
     if(!exporter)
         return;
-    exporter->fem_gradient(uid, prim_grad);
+    exporter->fem_gradient(prim_grad);
 }
 
-void FEMExporterManager::get_fem_hessian(std::string_view    uid,
-                                                 geometry::Geometry& prim_hess)
+void FEMExporterManager::get_fem_hessian(U64 uid, geometry::Geometry& prim_hess)
 {
     auto exporter = find_exporter(uid);
     if(!exporter)
         return;
-    exporter->fem_hessian(uid, prim_hess);
+    exporter->fem_hessian(prim_hess);
 }
-
-// vector<std::string> FEMExporterManager::get_fem_primitive_types() const
-// {
-//     return m_fem_prim_types;
-// }
 
 void FEMExporterManager::add_exporter(FEMExporter* exporter)
 {
@@ -81,9 +73,9 @@ void FEMExporterManager::add_exporter(FEMExporter* exporter)
     m_exporters.register_sim_system(*exporter);
 }
 
-FEMExporter* FEMExporterManager::find_exporter(std::string_view uid) const
+FEMExporter* FEMExporterManager::find_exporter(U64 uid) const
 {
-    auto it = m_exporter_map.find(std::string{uid});
+    auto it = m_exporter_map.find(uid);
     if(it != m_exporter_map.end())
     {
         return it->second;
@@ -99,14 +91,4 @@ Supported types are: [{}])",
     }
 }
 
-// void FEMExporterManager::_create_prim_type_on_geo(std::string_view prim_type_v,
-//                                                       geometry::Geometry& geo)
-// {
-//     auto prim_type = geo.meta().find<std::string>("prim_type");
-//     if(!prim_type)
-//     {
-//         prim_type = geo.meta().create<std::string>("prim_type");
-//     }
-//     view(*prim_type)[0] = prim_type_v;
-// }
 }  // namespace uipc::backend::cuda
