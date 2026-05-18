@@ -3,10 +3,6 @@
 
 namespace uipc::backend::cuda
 {
-// std::string_view FEMExporter::prim_type() const noexcept
-// {
-//     return get_prim_type();
-// }
 
 U64 FEMExporter::uid() const noexcept
 {

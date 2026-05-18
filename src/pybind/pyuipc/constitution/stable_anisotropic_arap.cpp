@@ -7,7 +7,7 @@ using namespace uipc::constitution;
 using namespace uipc::geometry;
 PyStableAnisotropicARAP::PyStableAnisotropicARAP(py::module& m)
 {
-    auto class_StableAnisotropicARAP = py::class_<StableAnisotropicARAP, FiniteElementConstitution>(
+    auto class_StableAnisotropicARAP = py::class_<StableAnisotropicARAP, FiniteElementExtraConstitution>(
         m, "StableAnisotropicARAP", R"(StableAnisotropicARAP constitution for stable anisotropic ARAP hyperelastic material.)");
 
     class_StableAnisotropicARAP.def(py::init<const Json&>(),

@@ -35,8 +35,6 @@ class UIPC_CORE_API FEMSystemFeature final : public Feature
 
     void fem_hessian(const constitution::IConstitution& c, geometry::Geometry& vert_hess);
 
-    vector<std::string> fem_primitive_types() const;
-
   private:
     virtual std::string_view     get_name() const override;
     S<FEMSystemFeatureOverrider> m_impl;

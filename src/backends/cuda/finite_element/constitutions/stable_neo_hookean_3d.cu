@@ -203,7 +203,7 @@ class StableNeoHookean3DFEMExporter final : public FEMExporter
 
     void do_build(BuildInfo&) override
     {
-        fem_constitution = require<FEM3DConstitution>(QueryOptions{.exact = false});
+        fem_constitution = require<StableNeoHookean3D>(QueryOptions{.exact = false});
     }
 
     // ------------------------------------------------------------------

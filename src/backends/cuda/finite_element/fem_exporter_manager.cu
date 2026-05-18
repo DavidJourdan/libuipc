@@ -27,7 +27,7 @@ void FEMExporterManager::init()
         auto it  = m_exporter_map.find(uid);
         if(it != m_exporter_map.end())
         {
-            logger::warn("FEM exporter for primitive type '{}'<{}> already exists, overwriting with <{}>.",
+            logger::warn("FEM exporter for constitution uid '{}'<{}> already exists, overwriting with <{}>.",
                          uid,
                          it->second->name(),
                          exporter->name());
