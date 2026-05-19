@@ -1,5 +1,6 @@
-#include <finite_element/fem_3d_extra_constitution.h>
 #include <finite_element/constitutions/muscle_function.h>
+#include <finite_element/fem_3d_extra_constitution.h>
+#include <finite_element/fem_exporter.h>
 #include <finite_element/fem_utils.h>
 #include <Eigen/Dense>
 #include <utils/make_spd.h>
@@ -114,11 +115,12 @@ class Muscle final : public FEM3DExtraConstitution
 
                        auto F = fem::F(x0, x1, x2, x3, Dm_inv);
 
-                       Float E;
+                       Float E_passive, E_active;
 
-                       muscle_passive::E(E, mu_passive, direction, F);
-                       E *= dt * dt * volumes(I);
-                       energies(I) = E;
+                       muscle_passive::E(E_passive, mu_passive, direction, F);
+                       muscle_active::E(E_active, mu_active, direction, F);
+
+                       energies(I) = (E_passive + E_active) * dt * dt * volumes(I);
                    });
     }
 
@@ -157,9 +159,10 @@ class Muscle final : public FEM3DExtraConstitution
 
                        auto Vdt2 = volumes(I) * dt * dt;
 
-                       Matrix3x3 dEdF;
-                       muscle_passive::dEdVecF(dEdF, mu_passive, direction, F);
-                       auto VecdEdF = flatten(dEdF);
+                       Matrix3x3 dEdF_passive, dEdF_active;
+                       muscle_passive::dEdVecF(dEdF_passive, mu_passive, direction, F);
+                       muscle_active::dEdVecF(dEdF_active, mu_active, direction, F);
+                       auto VecdEdF = flatten(dEdF_passive + dEdF_active);
                        VecdEdF *= Vdt2;
 
                        Matrix9x12 dFdx = fem::dFdx(Dm_inv);
@@ -171,10 +174,12 @@ class Muscle final : public FEM3DExtraConstitution
                        if(gradient_only)
                            return;
 
-                       Matrix9x9 ddEddF;
-                       muscle_passive::ddEddVecF(ddEddF, mu_passive, direction, F);
-                       ddEddF *= Vdt2;
+                       Matrix9x9 ddEddF_passive, ddEddF_active;
+                       muscle_passive::ddEddVecF(ddEddF_passive, mu_passive, direction, F);
+                       muscle_active::ddEddVecF(ddEddF_active, mu_active, direction, F);
+                       Matrix9x9 ddEddF = ddEddF_passive + ddEddF_active;
                        make_spd(ddEddF);
+                       ddEddF *= Vdt2;
                        Matrix12x12 H = dFdx.transpose() * ddEddF * dFdx;
                        TripletMatrixAssembler TMA{H3x3s};
                        TMA.half_block<StencilSize>(I * HalfHessianSize).write(tet, H);
@@ -183,4 +188,107 @@ class Muscle final : public FEM3DExtraConstitution
 };
 
 REGISTER_SIM_SYSTEM(Muscle);
+
+
+class MuscleFEMExporter final : public FEMExporter
+{
+  public:
+    using FEMExporter::FEMExporter;
+
+    SimSystemSlot<FEM3DExtraConstitution> fem_constitution;
+
+    U64 get_uid() const noexcept override
+    {
+        return Muscle::ConstitutionUID;
+    }
+
+    void do_build(BuildInfo&) override
+    {
+        fem_constitution = require<Muscle>(QueryOptions{.exact = false});
+    }
+
+    // ------------------------------------------------------------------
+    // Energy  —  one Float per tet, plus tet topology
+    //
+    // Geometry layout after call:
+    //   energy_geo.instances()[t] = { "topo": Vector4i, "energy": Float }
+    //   t = 0 … N_tets-1
+    // ------------------------------------------------------------------
+    void get_fem_energy(geometry::Geometry& energy_geo) override
+    {
+        auto indices  = fem_constitution->element_indices();   // CBufferView<Vector4i>
+        auto energies = fem_constitution->element_energies();  // CBufferView<Float>
+
+        energy_geo.instances().resize(indices.size());
+
+        // Topology
+        auto topo = energy_geo.instances().find<Vector4i>("topo");
+        if(!topo)
+            topo = energy_geo.instances().create<Vector4i>("topo", Vector4i::Zero());
+        auto topo_view = view(*topo);
+        indices.copy_to(topo_view.data());
+
+        // Per-element energy
+        auto energy = energy_geo.instances().find<Float>("energy");
+        if(!energy)
+            energy = energy_geo.instances().create<Float>("energy", 0.0f);
+        auto energy_view = view(*energy);
+        energies.copy_to(energy_view.data());
+    }
+
+    // ------------------------------------------------------------------
+    // Gradient — doublet set: (i: IndexT, grad: Vector3)
+    //   N_doublets = 4 * N_tets  (one per tet-corner vertex)
+    //   Elastic force on vertex i = -sum of all grad entries with index i
+    // ------------------------------------------------------------------
+    void get_fem_gradient(geometry::Geometry& grad_geo) override
+    {
+        auto grads = fem_constitution->element_gradients();  // CDoubletVectorView<Float,3>
+
+        grad_geo.instances().resize(grads.doublet_count());
+
+        auto i = grad_geo.instances().find<IndexT>("i");
+        if(!i)
+            i = grad_geo.instances().create<IndexT>("i", -1);
+        auto i_view = view(*i);
+        grads.indices().copy_to(i_view.data());
+
+        auto grad = grad_geo.instances().find<Vector3>("grad");
+        if(!grad)
+            grad = grad_geo.instances().create<Vector3>("grad", Vector3::Zero());
+        auto grad_view = view(*grad);
+        grads.values().copy_to(grad_view.data());
+    }
+
+    // ------------------------------------------------------------------
+    // Hessian — triplet set: (i: IndexT, j: IndexT, hess: Matrix3x3)
+    //   N_triplets = 16 * N_tets  (4×4 blocks per tet, off-diagonal included)
+    // ------------------------------------------------------------------
+    void get_fem_hessian(geometry::Geometry& hess_geo) override
+    {
+        auto hess = fem_constitution->element_hessians();  // CTripletMatrixView<Float,3>
+
+        hess_geo.instances().resize(hess.triplet_count());
+
+        auto i = hess_geo.instances().find<IndexT>("i");
+        if(!i)
+            i = hess_geo.instances().create<IndexT>("i", -1);
+        auto i_view = view(*i);
+        hess.row_indices().copy_to(i_view.data());
+
+        auto j = hess_geo.instances().find<IndexT>("j");
+        if(!j)
+            j = hess_geo.instances().create<IndexT>("j", -1);
+        auto j_view = view(*j);
+        hess.col_indices().copy_to(j_view.data());
+
+        auto h = hess_geo.instances().find<Matrix3x3>("hess");
+        if(!h)
+            h = hess_geo.instances().create<Matrix3x3>("hess", Matrix3x3::Zero());
+        auto h_view = view(*h);
+        hess.values().copy_to(h_view.data());
+    }
+};
+
+REGISTER_SIM_SYSTEM(MuscleFEMExporter);
 }  // namespace uipc::backend::cuda
