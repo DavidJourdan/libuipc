@@ -1,4 +1,5 @@
 #include <pyuipc/constitution/stable_anisotropic_arap.h>
+#include <uipc/constitution/finite_element_extra_constitution.h>
 #include <uipc/constitution/stable_anisotropic_arap.h>
 
 namespace pyuipc::constitution

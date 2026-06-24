@@ -1,4 +1,5 @@
 #include <pyuipc/constitution/muscle.h>
+#include <uipc/constitution/finite_element_extra_constitution.h>
 #include <uipc/constitution/muscle.h>
 
 namespace pyuipc::constitution
@@ -26,8 +27,9 @@ Returns:
                                [](Muscle& self,
                                   SimplicialComplex& sc,
                                   py::array_t<Float> direction,
-                                  Float anisotropy_modulus)
-                               { self.apply_to(sc, to_matrix<Vector3>(direction), anisotropy_modulus); },
+                                  Float passive_modulus,
+                                  Float active_modulus)
+                               { self.apply_to(sc, to_matrix<Vector3>(direction), passive_modulus, active_modulus); },
                                py::arg("sc"),
                                py::arg("direction"),
                                py::arg("passive_modulus") = 120.0_kPa,

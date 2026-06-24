@@ -16,6 +16,8 @@
 #include <pyuipc/core/subscene_tabular.h>
 #include <pyuipc/core/state_accessor_feature.h>
 #include <pyuipc/core/distance_diagnoser_feature.h>
+#include <pyuipc/core/muscle_controller_feature.h>
+#include <pyuipc/core/fem_system_feature.h>
 
 namespace pyuipc::core
 {
@@ -23,8 +25,10 @@ PyModule::PyModule(py::module& m)
 {
     PyFeatureCollection{m};
     PyContactSystemFeature{m};
+    PyFEMSystemFeature{m};
     PyDistanceDiagnoserFeature{m};
     PyStateAccessorFeature{m};
+    PyMuscleControllerFeature{m};
 
     PyEngine{m};
 

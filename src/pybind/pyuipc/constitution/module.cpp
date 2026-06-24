@@ -76,16 +76,16 @@ PyModule::PyModule(py::module& m)
     PyNeoHookeanShell{m};
     PyStrainLimitingBaraffWitkinShell{m};
     PyStableNeoHookean{m};
-    PyStableAnisotropicARAP{m};
-    PyMuscle{m};
     PyARAP{m};
-
+    
     // Finite Extra Constitutions
     PyFiniteElementExtraConstitution{m};
     PyKirchhoffRodBending{m};
     PyDiscreteShellBending{m};
     PyStrainPlasticDiscreteShellBending{m};
     PyStressPlasticDiscreteShellBending{m};
+    PyStableAnisotropicARAP{m};
+    PyMuscle{m};
 
     // Inter Primitive Constitutions
     PyInterPrimitiveConstitution{m};

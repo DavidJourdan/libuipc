@@ -1,5 +1,6 @@
-#include <finite_element/fem_3d_constitution.h>
 #include <finite_element/constitutions/stable_neo_hookean_3d_function.h>
+#include <finite_element/fem_3d_constitution.h>
+#include <finite_element/fem_exporter.h>
 #include <finite_element/fem_utils.h>
 #include <kernel_cout.h>
 #include <muda/ext/eigen/log_proxy.h>
@@ -7,7 +8,6 @@
 #include <muda/ext/eigen/evd.h>
 #include <utils/make_spd.h>
 #include <utils/matrix_assembler.h>
-#include <finite_element/fem_exporter.h>
 
 namespace uipc::backend::cuda
 {
@@ -153,8 +153,6 @@ class StableNeoHookean3D final : public FEM3DConstitution
                        auto F = fem::F(x0, x1, x2, x3, Dm_inv);
 
                        auto J = F.determinant();
-
-                       //auto VecF = flatten(F);
 
                        auto Vdt2 = volumes(I) * dt * dt;
 
