@@ -20,6 +20,33 @@ PyMuscleControllerFeature::PyMuscleControllerFeature(py::module& m)
 Args:
     geometry: SimplicialComplex where active moduli are stored in.)");
 
+    class_MuscleControllerFeature.def(
+        "read_muscle_groups_from",
+        [](MuscleControllerFeature& self, geometry::SimplicialComplex& geo)
+        { self.read_muscle_groups_from(geo); },
+        py::arg("geometry"),
+        R"(Read per-tet muscle ids from target geometry.
+Args:
+    geometry: SimplicialComplex where muscle ids are stored in.)");
+
+    class_MuscleControllerFeature.def(
+        "read_activations", [](MuscleControllerFeature& self, const std::unordered_map<int, std::vector<float>>& activations)
+        { self.read_activations(activations); },
+        py::arg("activations"),
+        R"(Read the dictionary of activation lists and convert it internally to an Eigen matrix
+Args:
+    activations: Dict of activation values for each muscle)");
+
+    class_MuscleControllerFeature.def(
+        "update_next_frame", [](MuscleControllerFeature& self, geometry::SimplicialComplex& geo, int frame_id)
+        { self.update_next_frame(geo, frame_id); },
+        py::arg("geometry"),
+        py::arg("frame_id"),
+        R"(Update the active coeffs following the stored activation pattern and the provided frame_id 
+Args:
+    geometry: SimplicialComplex where active moduli are stored in.
+    frame_id: Index into the activation map)");
+
     class_MuscleControllerFeature.attr("FeatureName") = MuscleControllerFeature::FeatureName;
 }
 }  // namespace pyuipc::core
