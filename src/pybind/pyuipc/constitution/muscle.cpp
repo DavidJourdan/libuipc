@@ -31,7 +31,7 @@ Returns:
                                   Float active_modulus)
                                { self.apply_to(sc, to_matrix<Vector3>(direction), passive_modulus, active_modulus); },
                                py::arg("sc"),
-                               py::arg("direction"),
+                               py::arg("direction") = as_numpy(Vector3(0,0,0)),
                                py::arg("passive_modulus") = 120.0_kPa,
                                py::arg("active_modulus") = 120.0_kPa,
                                R"(Apply muscle constitution to a simplicial complex.
