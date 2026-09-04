@@ -15,8 +15,14 @@ class UIPC_CONSTITUTION_API Muscle : public FiniteElementExtraConstitution
     void apply_to(geometry::SimplicialComplex& sc,
                   Vector3 direction,
                   Float passive_modulus = 120.0_kPa,
-                  Float active_modulus = 120.0_kPa) const;
+                  Float active_modulus = 0._kPa) const;
 
+    // this one will try to find a direction vector in the SimplicialComplex
+    // is there is none, will initialize with a zero vector
+    void apply_to(geometry::SimplicialComplex& sc,
+                  Float passive_modulus = 120.0_kPa,
+                  Float active_modulus = 0._kPa) const;
+      
     static Json default_config() noexcept;
 
   protected:

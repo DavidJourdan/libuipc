@@ -23,6 +23,7 @@ void MuscleControllerFeature::read_muscle_groups_from(geometry::SimplicialComple
     int i = 0;
     for(IndexT muscle_id : labels_attr->view())
     {
+        UIPC_ASSERT(muscle_id < MAX_MUSCLE_ID, "[MuscleControllerFeature] Muscle ID is out of range.")
         if(muscle_id > 0)
         {
             if(muscle_ids_to_idx[muscle_id] == -1)

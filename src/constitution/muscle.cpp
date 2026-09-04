@@ -21,7 +21,6 @@ Muscle::Muscle(const Json& config) noexcept
 }
 
 void Muscle::apply_to(geometry::SimplicialComplex& sc,
-                      Vector3                      direction,
                       Float                        passive_modulus,
                       Float                        active_modulus) const
 {
@@ -32,17 +31,42 @@ void Muscle::apply_to(geometry::SimplicialComplex& sc,
     auto passive_attr = sc.tetrahedra().find<Float>("passive_modulus");
     if(!passive_attr)
         passive_attr = sc.tetrahedra().create<Float>("passive_modulus", passive_modulus);
-    std::ranges::fill(geometry::view(*passive_attr), passive_modulus);
 
     auto active_attr = sc.tetrahedra().find<Float>("active_modulus");
     if(!active_attr)
         active_attr = sc.tetrahedra().create<Float>("active_modulus", active_modulus);
-    std::ranges::fill(geometry::view(*active_attr), active_modulus);
 
     auto direction_attr = sc.tetrahedra().find<Vector3>("direction");
     if(!direction_attr)
-        direction_attr = sc.tetrahedra().create<Vector3>("direction", direction);
-    std::ranges::fill(geometry::view(*direction_attr), direction);
+        direction_attr = sc.tetrahedra().create<Vector3>("direction", Vector3(0.,0.,0.));
+}
+
+void Muscle::apply_to(geometry::SimplicialComplex& sc,
+                      Vector3                      direction,
+                      Float                        passive_modulus,
+                      Float                        active_modulus) const
+{
+    Base::apply_to(sc);
+
+    UIPC_ASSERT(sc.dim() == 3, "Muscle only supports 3D simplicial complex");
+
+    auto passive_attr = sc.tetrahedra().find<Float>("passive_modulus");
+    if(passive_attr)
+        std::ranges::fill(geometry::view(*passive_attr), passive_modulus);
+    else
+        sc.tetrahedra().create<Float>("passive_modulus", passive_modulus);
+    
+    auto active_attr = sc.tetrahedra().find<Float>("active_modulus");
+    if(active_attr)
+        std::ranges::fill(geometry::view(*active_attr), active_modulus);
+    else
+        sc.tetrahedra().create<Float>("active_modulus", active_modulus);
+
+    auto direction_attr = sc.tetrahedra().find<Vector3>("direction");
+    if(direction_attr)
+        std::ranges::fill(geometry::view(*direction_attr), direction);
+    else
+        sc.tetrahedra().create<Vector3>("direction", direction);
 }
 
 Json Muscle::default_config() noexcept
