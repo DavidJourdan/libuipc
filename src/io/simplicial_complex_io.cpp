@@ -80,12 +80,11 @@ SimplicialComplex SimplicialComplexIO::read_msh(std::string_view file_name)
 
     RowMajorMatrix<double> doubleX;
     RowMajorMatrix<Float>  X;
-
-    RowMajorMatrix<IndexT> F;
-    RowMajorMatrix<IndexT> T;
-    VectorXi               TriTag;
-    VectorXi               TetTag;
-    if(!igl::readMSH(string{file_name}, doubleX, F, T, TriTag, TetTag))
+    RowMajorMatrix<IndexT> F, T;
+    VectorXi               TriTag, TetTag;
+    std::vector<std::string> XFields, EFields;
+    std::vector<RowMajorMatrix<Float>> XF, TriF, TetF;
+    if(!igl::readMSH(string{file_name}, doubleX, F, T, TriTag, TetTag, XFields, XF, EFields, TriF, TetF))
     {
         throw GeometryIOError{fmt::format("Failed to load .msh file: {}", file_name)};
     }
@@ -109,7 +108,72 @@ SimplicialComplex SimplicialComplexIO::read_msh(std::string_view file_name)
     Ts.resize(T.rows());
     for(auto&& [i, t] : enumerate(Ts))
         t = T.row(i);
-    return tetmesh(Vs, Ts);
+
+    SimplicialComplex sc = tetmesh(Vs, Ts);
+
+    if(XFields.size() != XF.size())
+    {
+        logger::warn("[MSHLoader] Mismatched per-node field names and data");
+        return sc;
+    }
+    for(auto&& [i, field] : enumerate(XFields))
+    {
+        std::cout << field << "\n";
+        if(XF[i].cols() == 1)
+        {
+            auto attribute_ptr = sc.vertices().create<Float>(field);
+            std::span<Float> attribute_view = view(*attribute_ptr);
+            for(int j = 0; j < XF[i].rows(); ++j)
+                attribute_view[j] = XF[i](j);
+        }
+        if(XF[i].cols() == 2)
+        {
+            auto attribute_ptr = sc.vertices().create<Vector2>(field);
+            std::span<Vector2> attribute_view = view(*attribute_ptr);
+            for(int j = 0; j < XF[i].rows(); ++j)
+                attribute_view[j] = XF[i].row(j);
+        }
+        if(XF[i].cols() == 3)
+        {
+            auto attribute_ptr = sc.vertices().create<Vector3>(field);
+            std::span<Vector3> attribute_view = view(*attribute_ptr);
+            for(int j = 0; j < XF[i].rows(); ++j)
+                attribute_view[j] = XF[i].row(j);
+        }
+    }
+
+    if(EFields.size() != TetF.size())
+    {
+        logger::warn("[MSHLoader] Mismatched per-tet field names and data");
+        return sc;
+    }
+    for(auto&& [i, field] : enumerate(EFields))
+    {
+        std::cout << field << "\n";
+        if(TetF[i].cols() == 1)
+        {
+            auto attribute_ptr = sc.tetrahedra().create<Float>(field);
+            std::span<Float> attribute_view = view(*attribute_ptr);
+            for(int j = 0; j < TetF[i].rows(); ++j)
+                attribute_view[j] = TetF[i](j);
+        }
+        if(TetF[i].cols() == 2)
+        {
+            auto attribute_ptr = sc.tetrahedra().create<Vector2>(field);
+            std::span<Vector2> attribute_view = view(*attribute_ptr);
+            for(int j = 0; j < TetF[i].rows(); ++j)
+                attribute_view[j] = TetF[i].row(j);
+        }
+        if(TetF[i].cols() == 3)
+        {
+            auto attribute_ptr = sc.tetrahedra().create<Vector3>(field);
+            std::span<Vector3> attribute_view = view(*attribute_ptr);
+            for(int j = 0; j < TetF[i].rows(); ++j)
+                attribute_view[j] = TetF[i].row(j);
+        }
+    }
+
+    return sc;
 }
 
 bool obj_is_pure_line_mesh(std::string_view file_name)
