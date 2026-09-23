@@ -22,18 +22,21 @@ class UIPC_CORE_API MuscleControllerFeature : public Feature
 
     void copy_active_coeffs_from(geometry::SimplicialComplex& geo);
 
-    // void setup_muscle_coeffs(geometry::SimplicialComplex& geo, double passive_coeff);
     void read_muscle_groups_from(geometry::SimplicialComplex& geo);
     void read_activations(const std::unordered_map<int, std::vector<float>>& activations);
     void update_next_frame(geometry::SimplicialComplex& geo, int frame_id);
+    void set_active_modulus(Float coeff) { active_modulus = coeff; }
+    int nb_frames() { return activations.cols(); }
 
   private:
     virtual std::string_view get_name() const override;
     S<MuscleControllerFeatureOverrider> m_impl;
 
     static constexpr int MAX_MUSCLE_ID = 1100;
-    std::array<int, MAX_MUSCLE_ID> muscle_ids_to_idx;
+    std::vector<int> muscle_ids_to_idx;
     std::vector<std::vector<int>> muscle_groups;
     Eigen::MatrixXd activations;
+
+    Float active_modulus = -1;
 };
 }  // namespace uipc::core
