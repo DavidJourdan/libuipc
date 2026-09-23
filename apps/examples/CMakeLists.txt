@@ -1,5 +1,5 @@
 add_subdirectory(hello_affine_body)
-add_subdirectory(muscle_tet)
+add_subdirectory(larva)
 add_subdirectory(fem_export)
 add_subdirectory(hello_simplicial_complex)
 add_subdirectory(wrecking_ball)

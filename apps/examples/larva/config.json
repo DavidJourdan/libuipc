@@ -1,0 +1,12 @@
+{
+    "larva_mesh": "larva.msh",
+    "dt": 0.01,
+    "gravity": false,
+    "muscle_contraction_pattern": "muscle_pattern.csv",
+    "youngs_modulus": 5000.0,
+    "poisson_ratio": 0.498,
+    "muscle_active": 50000.0,
+    "muscle_passive": 20000.0,
+    "d_hat": 0.00002,
+    "scale": 0.05
+}
