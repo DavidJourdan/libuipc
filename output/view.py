@@ -6,11 +6,12 @@ import time
 
 import numpy as np
 import polyscope as ps
-import polyscope.imgui as psim
+import polyscope.imgui as gui
+import meshio
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 FOLDER = sys.argv[1] if len(sys.argv) > 1 else "."
-PATTERN = "scene_surface*.obj"
+PATTERN = "scene_mesh*.msh"
 DEFAULT_FPS = 25.0
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,15 @@ def load_obj(path: str):
                     faces.append((ids[0], ids[i], ids[i + 1]))
     return np.asarray(verts, dtype=np.float64), np.asarray(faces, dtype=np.int32)
 
+def load_msh(path: str):
+    mesh = meshio.read(path)
+
+    V = mesh.points
+    F = mesh.cells[0].data
+    activations = mesh.cell_data["active_modulus"]
+
+    return V, F, activations
+
 
 # ── File discovery ─────────────────────────────────────────────────────────────
 def discover_files(folder: str, pattern: str):
@@ -63,6 +73,7 @@ print(f"Found {N} frames in '{FOLDER}'")
 ps.init()
 ps.set_program_name("Simulation Surface Viewer")
 ps.set_ground_plane_height(1.0)  # in world coordinates
+ps.set_give_focus_on_show(True)
 
 # State (plain dict so the nested callback can mutate it freely)
 state = {
@@ -72,17 +83,17 @@ state = {
     "last_t": 0.0,
 }
 
-verts, faces = load_obj(FILES[0])
-ps_mesh = ps.register_surface_mesh(
-    "surface", verts, faces, smooth_shade=False, edge_width=1
-)
+verts, faces, activations = load_msh(FILES[0])
+ps_mesh = ps.register_volume_mesh("mesh", verts, faces, enabled=True)
 
+V = []
+for f in FILES:
+    verts, faces, activations = load_msh(f)
+    V.append(verts)
 
 def show_frame(idx: int):
     """Load OBJ at index idx and push it to polyscope."""
-    verts, faces = load_obj(FILES[idx])
-    # Re-registering with the same name updates the existing mesh in place
-    ps_mesh.update_vertex_positions(verts)
+    ps_mesh.update_vertex_positions(V[idx])
 
 
 show_frame(0)
@@ -94,43 +105,43 @@ def ui_callback():
 
     # ── Transport buttons ────────────────────────────────────────────────────
     if s["playing"]:
-        if psim.Button("Pause"):
+        if gui.Button("Pause"):
             s["playing"] = False
     else:
-        if psim.Button("Play "):
+        if gui.Button("Play "):
             s["playing"] = True
             s["last_t"] = time.time()
 
-    psim.SameLine()
-    if psim.Button("Prev"):
+    gui.SameLine()
+    if gui.Button("Prev"):
         s["playing"] = False
         s["frame"] = max(0, s["frame"] - 1)
         show_frame(s["frame"])
 
-    psim.SameLine()
-    if psim.Button("Next"):
+    gui.SameLine()
+    if gui.Button("Next"):
         s["playing"] = False
         s["frame"] = min(N - 1, s["frame"] + 1)
         show_frame(s["frame"])
 
-    psim.SameLine()
-    if psim.Button("Reset"):
+    gui.SameLine()
+    if gui.Button("Reset"):
         s["playing"] = False
         s["frame"] = 0
         show_frame(s["frame"])
 
     # ── Frame scrubber ───────────────────────────────────────────────────────
-    changed, val = psim.SliderInt("Frame", s["frame"], 0, N - 1)
+    changed, val = gui.SliderInt("Frame", s["frame"], 0, N - 1)
     if changed:
         s["playing"] = False
         s["frame"] = val
         show_frame(s["frame"])
 
     # ── Playback speed ───────────────────────────────────────────────────────
-    _, s["fps"] = psim.SliderFloat("FPS", s["fps"], 1.0, 60.0)
+    _, s["fps"] = gui.SliderFloat("FPS", s["fps"], 1.0, 60.0)
 
     # ── Info line ────────────────────────────────────────────────────────────
-    psim.TextUnformatted(
+    gui.TextUnformatted(
         f"Frame {s['frame'] + 1} / {N}   —   {os.path.basename(FILES[s['frame']])}"
     )
 

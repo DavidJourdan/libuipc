@@ -24,6 +24,7 @@ Release/
 
 imgui.ini
 .polyscope.ini
+systems.json
 
 bin/
 .xmake/

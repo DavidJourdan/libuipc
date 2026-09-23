@@ -7,6 +7,5 @@
     "poisson_ratio": 0.498,
     "muscle_active": 50000.0,
     "muscle_passive": 20000.0,
-    "d_hat": 0.00002,
-    "scale": 0.05
+    "d_hat": 0.00002
 }

@@ -108,9 +108,7 @@ int main()
     muscle_controller->read_muscle_groups_from(larva_mesh);
     muscle_controller->read_activations(activations);
 
-    SceneIO sio{scene};
     auto    this_output_path = AssetDir::output_path(UIPC_RELATIVE_SOURCE_FILE);
-    sio.write_surface(fmt::format("{}scene_surface{}.obj", this_output_path, 0));
     save_msh(fmt::format("{}scene_mesh{}.msh", this_output_path, 0), larva_mesh_slot.geometry->geometry());
 
     SimplicialComplex mesh = io.read(fmt::format("{}scene_mesh{}.msh", this_output_path, 0));
@@ -124,7 +122,6 @@ int main()
         world.advance();
         world.sync();
         world.retrieve();
-        sio.write_surface(fmt::format("{}scene_surface{}.obj", this_output_path, i + 1));
         save_msh(fmt::format("{}scene_mesh{}.msh", this_output_path, i + 1), larva_mesh_slot.geometry->geometry());
     }
 }
