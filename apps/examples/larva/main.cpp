@@ -118,7 +118,7 @@ int main()
 
     for(int i = 0; i < muscle_controller->nb_frames(); i++)
     {
-        muscle_controller->update_next_frame(larva_mesh, i);
+        muscle_controller->update_next_frame(larva_mesh_slot.geometry->geometry(), i);
         world.advance();
         world.sync();
         world.retrieve();

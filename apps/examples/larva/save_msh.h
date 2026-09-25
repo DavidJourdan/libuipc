@@ -34,9 +34,18 @@ void save_msh(std::string_view file_name, const uipc::geometry::SimplicialComple
     for(int i = 0; i < values.rows(); ++i)
         values(i) = active_modulus_view[i];
     TetF.push_back(values);
+    
+    EFields.push_back("muscle_id");
+    auto muscle_id = sc.tetrahedra().find<double>("muscle_id");
+    auto muscle_id_view = muscle_id->view();
+
+    for(int i = 0; i < values.rows(); ++i)
+        values(i) = muscle_id_view[i];
+    TetF.push_back(values);
 
     // seems like we have to add values to faces even if unused
     VectorXd padding;
+    TriF.push_back(padding);
     TriF.push_back(padding);
     
     // ---- write ------------------------------------------------------------
