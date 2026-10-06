@@ -6,12 +6,10 @@ import time
 
 import numpy as np
 import polyscope as ps
-import polyscope.imgui as gui
-import meshio
+import polyscope.imgui as psim
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 FOLDER = sys.argv[1] if len(sys.argv) > 1 else "."
-PATTERN = "scene_mesh*.msh"
 DEFAULT_FPS = 25.0
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -61,19 +59,23 @@ def discover_files(folder: str, pattern: str):
     return sorted(paths, key=_key)
 
 
-FILES = discover_files(FOLDER, PATTERN)
-if not FILES:
-    sys.exit(f"[error] no files matching '{PATTERN}' found in '{FOLDER}'")
+surface_files = discover_files(FOLDER, "larva_vertices*.npy")
+muscle_files = discover_files(FOLDER, "muscle_vertices*.npy")
 
-N = len(FILES)
+N = len(surface_files)
 print(f"Found {N} frames in '{FOLDER}'")
+
+if len(muscle_files) != N:
+    print(f"Error: surface doesn't match muscles ({len(muscle_files)} != {N}).")
 
 
 # ── Polyscope init ─────────────────────────────────────────────────────────────
 ps.init()
 ps.set_program_name("Simulation Surface Viewer")
-ps.set_ground_plane_height(1.0)  # in world coordinates
 ps.set_give_focus_on_show(True)
+ps.set_ground_plane_mode('shadow_only')
+ps.set_ground_plane_height(-0.001)
+ps.set_transparency_render_passes(2)
 
 # State (plain dict so the nested callback can mutate it freely)
 state = {
@@ -83,21 +85,37 @@ state = {
     "last_t": 0.0,
 }
 
-verts, faces, activations = load_msh(FILES[0])
-ps_mesh = ps.register_volume_mesh("mesh", verts, faces, enabled=True)
+verts, faces = load_obj(os.path.join(FOLDER, "larva_surface.obj"))
+surface_mesh = ps.register_surface_mesh(
+    "surface", verts, faces, smooth_shade=False, edge_width=1
+)
+surface_mesh.set_transparency(0.5)
+surface_mesh.set_edge_width(0.0)
+verts, faces = load_obj(os.path.join(FOLDER, "muscle_surface.obj"))
+muscle_mesh = ps.register_surface_mesh(
+    "muscle", verts, faces, smooth_shade=False, edge_width=1
+)
 
-V = []
-for f in FILES:
-    verts, faces, activations = load_msh(f)
-    V.append(verts)
+# surface_verts = []
+# muscle_verts = []
+# for idx in range(N):
+#     verts, _ = load_obj(surface_files[idx])
+#     surface_verts.append(verts)
+
+#     verts, _ = load_obj(muscle_files[idx])
+#     muscle_verts.append(verts)
+
+
+
 
 def show_frame(idx: int):
     """Load OBJ at index idx and push it to polyscope."""
-    ps_mesh.update_vertex_positions(V[idx])
-
+    # surface_mesh.update_vertex_positions(surface_verts[idx])
+    # muscle_mesh.update_vertex_positions(muscle_verts[idx])
+    surface_mesh.update_vertex_positions(np.load(surface_files[idx]))
+    muscle_mesh.update_vertex_positions(np.load(muscle_files[idx]))
 
 show_frame(0)
-
 
 # ── UI callback ────────────────────────────────────────────────────────────────
 def ui_callback():
@@ -105,44 +123,44 @@ def ui_callback():
 
     # ── Transport buttons ────────────────────────────────────────────────────
     if s["playing"]:
-        if gui.Button("Pause"):
+        if psim.Button("Pause"):
             s["playing"] = False
     else:
-        if gui.Button("Play "):
+        if psim.Button("Play "):
             s["playing"] = True
             s["last_t"] = time.time()
 
-    gui.SameLine()
-    if gui.Button("Prev"):
+    psim.SameLine()
+    if psim.Button("Prev"):
         s["playing"] = False
         s["frame"] = max(0, s["frame"] - 1)
         show_frame(s["frame"])
 
-    gui.SameLine()
-    if gui.Button("Next"):
+    psim.SameLine()
+    if psim.Button("Next"):
         s["playing"] = False
         s["frame"] = min(N - 1, s["frame"] + 1)
         show_frame(s["frame"])
 
-    gui.SameLine()
-    if gui.Button("Reset"):
+    psim.SameLine()
+    if psim.Button("Reset"):
         s["playing"] = False
         s["frame"] = 0
         show_frame(s["frame"])
 
     # ── Frame scrubber ───────────────────────────────────────────────────────
-    changed, val = gui.SliderInt("Frame", s["frame"], 0, N - 1)
+    changed, val = psim.SliderInt("Frame", s["frame"], 0, N - 1)
     if changed:
         s["playing"] = False
         s["frame"] = val
         show_frame(s["frame"])
 
     # ── Playback speed ───────────────────────────────────────────────────────
-    _, s["fps"] = gui.SliderFloat("FPS", s["fps"], 1.0, 60.0)
+    _, s["fps"] = psim.SliderFloat("FPS", s["fps"], 1.0, 60.0)
 
     # ── Info line ────────────────────────────────────────────────────────────
-    gui.TextUnformatted(
-        f"Frame {s['frame'] + 1} / {N}   —   {os.path.basename(FILES[s['frame']])}"
+    psim.TextUnformatted(
+        f"Frame {s['frame'] + 1} / {N}   —   {os.path.basename(surface_files[s['frame']])}"
     )
 
     # ── Auto-advance when playing ────────────────────────────────────────────
