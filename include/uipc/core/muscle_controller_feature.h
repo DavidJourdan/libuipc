@@ -32,7 +32,6 @@ class UIPC_CORE_API MuscleControllerFeature : public Feature
     virtual std::string_view get_name() const override;
     S<MuscleControllerFeatureOverrider> m_impl;
 
-    static constexpr int MAX_MUSCLE_ID = 1100;
     std::vector<int> muscle_ids_to_idx;
     std::vector<std::vector<int>> muscle_groups;
     Eigen::MatrixXd activations;

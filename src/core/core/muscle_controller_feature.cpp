@@ -18,8 +18,6 @@ void MuscleControllerFeature::read_muscle_groups_from(geometry::SimplicialComple
 {
     auto labels_attr = geo.tetrahedra().find<Float>("muscle_id");
     UIPC_ASSERT(labels_attr, "[MuscleControllerFeature] Geometry has no 'muscle_id' attribute.");
-    // for(int i = 0; i < MAX_MUSCLE_ID; ++i)
-    //     muscle_ids_to_idx[i] = -1;
 
     Float max_muscle_id = 0;
     for(Float muscle_id : labels_attr->view())
@@ -27,20 +25,19 @@ void MuscleControllerFeature::read_muscle_groups_from(geometry::SimplicialComple
         if(muscle_id > max_muscle_id)
             max_muscle_id = muscle_id;
     }
-    muscle_ids_to_idx = std::vector<int>(int(max_muscle_id) + 1, -1);
+    muscle_ids_to_idx = std::vector<int>(static_cast<int>(max_muscle_id) + 1, -1);
 
     int i = 0;
-    for(IndexT muscle_id : labels_attr->view())
+    for(Float muscle_id : labels_attr->view())
     {
-        UIPC_ASSERT(muscle_id < MAX_MUSCLE_ID, "[MuscleControllerFeature] Muscle ID is out of range.")
         if(muscle_id > 0)
         {
-            if(muscle_ids_to_idx[muscle_id] == -1)
+            if(muscle_ids_to_idx[static_cast<int>(muscle_id)] == -1)
             {
-                muscle_ids_to_idx[muscle_id] = muscle_groups.size();
+                muscle_ids_to_idx[static_cast<int>(muscle_id)] = muscle_groups.size();
                 muscle_groups.push_back(std::vector<int>{});
             }
-            muscle_groups[muscle_ids_to_idx[muscle_id]].push_back(i);
+            muscle_groups[muscle_ids_to_idx[static_cast<int>(muscle_id)]].push_back(i);
         }
         i += 1;
     }

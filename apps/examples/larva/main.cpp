@@ -135,6 +135,7 @@ int main(int argc, char* argv[])
     // 2D / 3D mesh export
     MeshExporter mesh_exporter(larva_mesh_slot, filetype);
     mesh_exporter.save_vertices_binary(0);
+    // mesh_exporter.muscle_groups_to_json(fmt::format("{}muscle_groups.json", output_path));
 
     int nb_frames = 0;
     if(muscle_control)

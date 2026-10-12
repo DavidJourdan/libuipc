@@ -4,6 +4,7 @@
 #include <uipc/uipc.h>
 #include <igl/writeMSH.h>
 #include <fstream>
+#include <uipc/common/enumerate.h>
 
 enum class save_type
 {
@@ -126,15 +127,35 @@ class MeshExporter
                 larva_mesh.tetrahedra().find<double>("muscle_id")->view();
 
             vector<Vector4i> T;
+            vector<int> muscle_ids;
             for(int i = 0; i < tet_view.size(); ++i)
             {
                 if(muscle_id_view[i] > 0)
+                {
                     T.push_back(tet_view[i]);
+                    muscle_ids.push_back(static_cast<int>(muscle_id_view[i]));
+                }
             }
 
             _muscle_mesh = std::make_shared<SimplicialComplex>(tetmesh(V, T));
             label_surface(*_muscle_mesh);
             label_triangle_orient(*_muscle_mesh);
+
+            // transfer muscle_id from tets to triangles
+            auto parent_id_view = _muscle_mesh->triangles().find<IndexT>("parent_id")->view();
+            auto muscle_id_surface_view = view(*_muscle_mesh->triangles().create<int>("muscle_id"));
+            for(int i = 0; i < parent_id_view.size(); ++i)
+                muscle_id_surface_view[i] = muscle_ids[parent_id_view[i]];
+
+            auto muscle_id_vertex_view = view(*_muscle_mesh->vertices().create<int>("muscle_id"));
+            auto triangles = _muscle_mesh->triangles().topo().view();
+            for(int i = 0; i < parent_id_view.size(); ++i)
+            {
+                muscle_id_vertex_view[triangles[i](0)] = muscle_ids[parent_id_view[i]];
+                muscle_id_vertex_view[triangles[i](1)] = muscle_ids[parent_id_view[i]];
+                muscle_id_vertex_view[triangles[i](2)] = muscle_ids[parent_id_view[i]];
+            }
+
             _muscle_surface =
                 std::make_shared<SimplicialComplex>(extract_surface(*_muscle_mesh));
         }
@@ -219,6 +240,34 @@ class MeshExporter
 
         save_npy(fmt::format("{}larva_vertices{}.npy", output_path, frame_id), larva_out);
         save_npy(fmt::format("{}muscle_vertices{}.npy", output_path, frame_id), muscle_out);
+    }
+
+    void muscle_groups_to_json(const std::string &filename)
+    {
+        auto labels_attr = _muscle_surface->vertices().find<int>("muscle_id");
+
+        int max_muscle_id = 0;
+        for(int muscle_id : labels_attr->view())
+            if(muscle_id > max_muscle_id)
+                max_muscle_id = muscle_id;
+
+        std::vector<std::vector<int>> muscle_groups(max_muscle_id + 1);
+
+        for(auto&& [i, muscle_id] : enumerate(labels_attr->view()))
+        {
+            if(muscle_id > 0)
+                muscle_groups[muscle_id].push_back(i);
+        }
+
+        Json muscle_group_data;
+        for(auto&& [i, muscle_group] : enumerate(muscle_groups))
+        {
+            if(muscle_group.size() > 0)
+                muscle_group_data.emplace(std::to_string(i), muscle_group);
+        }
+        
+        std::ofstream file(filename);
+        file << muscle_group_data.dump();
     }
 
   private:

@@ -20,9 +20,7 @@ Muscle::Muscle(const Json& config) noexcept
 {
 }
 
-void Muscle::apply_to(geometry::SimplicialComplex& sc,
-                      Float                        passive_modulus,
-                      Float                        active_modulus) const
+void Muscle::apply_to(geometry::SimplicialComplex& sc, Float passive_modulus, Float active_modulus) const
 {
     Base::apply_to(sc);
 
@@ -55,7 +53,7 @@ void Muscle::apply_to(geometry::SimplicialComplex& sc,
         std::ranges::fill(geometry::view(*passive_attr), passive_modulus);
     else
         sc.tetrahedra().create<Float>("passive_modulus", passive_modulus);
-    
+
     auto active_attr = sc.tetrahedra().find<Float>("active_modulus");
     if(active_attr)
         std::ranges::fill(geometry::view(*active_attr), active_modulus);
