@@ -46,3 +46,6 @@ vsxmake*/
 # venv
 .venv/
 .omc/
+
+# libreoffice
+.~lock.*
