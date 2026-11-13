@@ -62,7 +62,7 @@ python3 pack.py --data ~/code/larva-viewer/data \
 | `main.cpp` | Simulation setup driven by a json config |
 | `read_activation_csv.h` | CSV parsing, resampling to `dt`, mesh↔csv muscle reconciliation |
 | `mesh_export.h` | `MeshExporter` (npy vertex export, msh save, muscle-group json) |
-| `pack.py` | Packs `larva_vertices*.npy`/`muscle_vertices*.npy` into `.lvf` for the viewer |
+| `pack.py` | Not in this folder — it lives at `~/code/larva-viewer/pack.py`; it packs the exported `*_vertices*.npy` into `.lvf.gz` for the viewer |
 | `larva.msh` | Rest mesh (tetrahedral, with muscle data) |
 | `larva_curr.msh` | Frame-0 pose for the hunch (from a drop run) |
 | `segment_interfaces.json` | Interface vertex indices on the segment boundary planes (from the pipeline) |
