@@ -17,21 +17,43 @@ cmake --build build -j 12 && build/Release/bin/larva <config>.json
 
 ## Two-stage workflow
 
-1. **Drop** (`drop.json` / `drop_new.json`): the rest-pose larva falls onto the
-   ground plane (`ground_height`) under gravity until contact. Exports
-   `larva_curr.msh` to the output folder.
+1. **Drop** (`drop.json`): the rest-pose larva falls onto the ground plane
+   (`ground_height`) under gravity until contact. Exports `larva_curr.msh` to
+   the output folder.
 2. Copy the exported mesh into this folder as the hunch config's
-   `curr_geometry` (e.g. `larva_curr.msh` / `larva_curr_new.msh`).
-   Only its vertex positions are used; topology and attributes come from the
-   rest mesh.
-3. **Hunch** (`hunch.json` / `hunch_new.json`): muscle activations from
-   `muscle_pattern.csv` drive peristalsis starting from the settled pose.
-   Frame count comes from the CSV time span resampled at `dt` (e.g. 1 s at
-   dt=0.01 → 101 frames), not from `nb_frames`.
+   `curr_geometry` (`larva_curr.msh`). Only its vertex positions are used;
+   topology and attributes come from the rest mesh.
+3. **Hunch** (`hunch.json`): muscle activations from `muscle_pattern.csv`
+   drive peristalsis starting from the settled pose. Frame count comes from
+   the CSV time span resampled at `dt` (e.g. 1 s at dt=0.01 → 101 frames),
+   not from `nb_frames`.
+4. **Pack** (see below) for the viewer.
 
 The output folder is shared and overwritten by every run — pack or move the
 frames between runs (`pack.py` requires contiguous frame numbering starting
 at 0, so stale files from a longer previous run will break it).
+
+## Viewer export (`pack.py`)
+
+The output is packaged for the larva-viewer at `~/code/larva-viewer`:
+
+```bash
+# muscle_pattern.csv must sit in the input folder so the viewer can show the
+# activation curve; run this from apps/examples/larva after a hunch run
+cp muscle_pattern.csv ../../../output/examples/larva/main.cpp/
+python3 pack.py --data ~/code/larva-viewer/data \
+    --input ../../../output/examples/larva/main.cpp --name <sim> --label "<label>"
+```
+
+- Produces `data/<sim>/{larva,muscle}_vertices.lvf.gz` and updates
+  `data/manifest.json`. Simulations follow the `hunch`, `hunch2`, ... naming.
+- The viewer has **one shared set of static assets** at its data root:
+  `larva_surface.obj`, `muscle_surface.obj`, `muscle_groups.json`. Each run
+  writes `larva_surface0.obj`, `muscle_surface0.obj` and `muscle_groups.json`
+  to the output folder; after a mesh change, copy them over the ones at the
+  data root (renaming the `0` suffix away). Old simulations whose surface
+  vertex count differs will no longer render correctly — that's a viewer
+  design limitation.
 
 ## Files
 
@@ -40,8 +62,9 @@ at 0, so stale files from a longer previous run will break it).
 | `main.cpp` | Simulation setup driven by a json config |
 | `read_activation_csv.h` | CSV parsing, resampling to `dt`, mesh↔csv muscle reconciliation |
 | `mesh_export.h` | `MeshExporter` (npy vertex export, msh save, muscle-group json) |
-| `pack.py` | Packs `larva_vertices*.npy`/`muscle_vertices*.npy` into `.lvf` for the viewer (`output/view.py`) |
-| `larva.msh`, `larva_new.msh` | Rest meshes (tetrahedral, with muscle data) |
+| `pack.py` | Packs `larva_vertices*.npy`/`muscle_vertices*.npy` into `.lvf` for the viewer |
+| `larva.msh` | Rest mesh (tetrahedral, with muscle data) |
+| `larva_curr.msh` | Frame-0 pose for the hunch (from a drop run) |
 | `muscle_pattern.csv` | Per-muscle activation time series |
 
 ## Mesh format
@@ -56,8 +79,8 @@ with two per-tetrahedron `$ElementData` fields:
 **Scale:** meshes come out of the segmentation pipeline at extent ~1.0.
 Before simulation they must be rescaled by **0.005** (about the origin) to
 match the tuned parameters (`d_hat = 2e-5`, `ground_height = -0.001`); see
-commit `4c08a964` "rescale mesh". `larva.msh` is already rescaled;
-`larva_new.msh` was rescaled the same way.
+commit `4c08a964` "rescale mesh". `larva.msh` is already rescaled; a fresh
+mesh from the pipeline is not.
 
 ## Muscles & activations
 
@@ -69,9 +92,14 @@ commit `4c08a964` "rescale mesh". `larva.msh` is already rescaled;
   - mesh muscles with no csv column → **zero activation**;
   - csv columns for muscles absent from the mesh → **dropped** (otherwise the
     muscle controller would index out of bounds).
-- Reference counts: `larva.msh` has 452 muscle ids, exactly matching the csv.
-  `larva_new.msh` has 564 ids: 114 are csv-less (zero-activated) and ids
-  223/273 are absent from the mesh (dropped).
+- Reference counts: the current `larva.msh` (2026-11 segmentation) has 564
+  muscle ids; `muscle_pattern.csv` has 452 columns: 114 mesh muscles are
+  csv-less (zero-activated) and ids 223/273 are absent from the mesh (dropped).
+
+## Code style (app-specific)
+
+- No single-use aggregate structs for return values: prefer plain types like
+  `std::tuple<std::vector<int>, std::vector<int>>` with structured bindings.
 
 ## Config keys (json)
 

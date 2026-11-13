@@ -147,14 +147,14 @@ class MeshExporter
             for(int i = 0; i < parent_id_view.size(); ++i)
                 muscle_id_surface_view[i] = muscle_ids[parent_id_view[i]];
 
-            auto muscle_id_vertex_view = view(*_muscle_mesh->vertices().create<int>("muscle_id"));
-            auto triangles = _muscle_mesh->triangles().topo().view();
-            for(int i = 0; i < parent_id_view.size(); ++i)
-            {
-                muscle_id_vertex_view[triangles[i](0)] = muscle_ids[parent_id_view[i]];
-                muscle_id_vertex_view[triangles[i](1)] = muscle_ids[parent_id_view[i]];
-                muscle_id_vertex_view[triangles[i](2)] = muscle_ids[parent_id_view[i]];
-            }
+            // auto muscle_id_vertex_view = view(*_muscle_mesh->vertices().create<int>("muscle_id"));
+            // auto triangles = _muscle_mesh->triangles().topo().view();
+            // for(int i = 0; i < parent_id_view.size(); ++i)
+            // {
+            //     muscle_id_vertex_view[triangles[i](0)] = muscle_ids[parent_id_view[i]];
+            //     muscle_id_vertex_view[triangles[i](1)] = muscle_ids[parent_id_view[i]];
+            //     muscle_id_vertex_view[triangles[i](2)] = muscle_ids[parent_id_view[i]];
+            // }
 
             _muscle_surface =
                 std::make_shared<SimplicialComplex>(extract_surface(*_muscle_mesh));
@@ -244,7 +244,7 @@ class MeshExporter
 
     void muscle_groups_to_json(const std::string &filename)
     {
-        auto labels_attr = _muscle_surface->vertices().find<int>("muscle_id");
+        auto labels_attr = _muscle_surface->triangles().find<int>("muscle_id");
 
         int max_muscle_id = 0;
         for(int muscle_id : labels_attr->view())

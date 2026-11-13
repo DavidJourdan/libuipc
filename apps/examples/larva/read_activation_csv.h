@@ -4,6 +4,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <stdexcept>
 #include <tuple>
@@ -213,4 +214,65 @@ inline std::unordered_map<int, std::vector<float>> resample_activations(
     }
 
     return resampled_dict;
+}
+
+/**
+ * @brief Reconciles an activation dict with the muscle ids present in the mesh.
+ *
+ * Muscles of the mesh that have no activation data get a zero activation for
+ * every frame. Activation columns of muscles that do not exist in the mesh are
+ * dropped, otherwise the muscle controller would write activations out of
+ * bounds. After this call, the keys of activation_dict are exactly
+ * mesh_muscle_ids.
+ *
+ * @param activation_dict Map of muscle_id -> activation time series (modified in place).
+ * @param mesh_muscle_ids Set of muscle ids (all > 0) present in the mesh.
+ * @return std::tuple<std::vector<int>, std::vector<int>> Sorted lists of the ids that
+ *         were zero-activated (muscles of the mesh absent from the csv) and dropped
+ *         (csv columns for muscles that do not exist in the mesh).
+ */
+inline std::tuple<std::vector<int>, std::vector<int>> match_activations_to_muscles(
+    std::unordered_map<int, std::vector<float>>& activation_dict,
+    const std::unordered_set<int>& mesh_muscle_ids)
+{
+    std::vector<int> zero_activated;
+    std::vector<int> dropped;
+
+    if (activation_dict.empty())
+    {
+        throw std::invalid_argument("[match_activations_to_muscles] activation dict is empty.");
+    }
+    if (mesh_muscle_ids.empty())
+    {
+        throw std::invalid_argument("[match_activations_to_muscles] mesh has no muscle.");
+    }
+
+    const size_t nb_frames = activation_dict.begin()->second.size();
+
+    for (int muscle_id : mesh_muscle_ids)
+    {
+        if (!activation_dict.contains(muscle_id))
+        {
+            zero_activated.push_back(muscle_id);
+            activation_dict[muscle_id] = std::vector<float>(nb_frames, 0.0f);
+        }
+    }
+
+    for (auto it = activation_dict.begin(); it != activation_dict.end();)
+    {
+        if (!mesh_muscle_ids.contains(it->first))
+        {
+            dropped.push_back(it->first);
+            it = activation_dict.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
+    std::sort(zero_activated.begin(), zero_activated.end());
+    std::sort(dropped.begin(), dropped.end());
+
+    return {zero_activated, dropped};
 }

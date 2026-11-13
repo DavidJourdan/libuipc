@@ -6,6 +6,7 @@
 #include <uipc/builtin/geometry_type.h>
 #include <fstream>
 #include <iostream>
+#include <unordered_set>
 #include "read_activation_csv.h"
 #include "mesh_export.h"
 
@@ -129,13 +130,44 @@ int main(int argc, char* argv[])
         auto activation_path = data["muscle_contraction_pattern"].get<std::string>();
         auto [times, raw_activations] = read_activation_csv(CONFIG_FOLDER + activation_path);
         auto activations = resample_activations(times, raw_activations, config["dt"]);
+
+        // collect the muscle ids present in the mesh
+        auto muscle_id_attr = larva_rest_mesh.tetrahedra().find<Float>("muscle_id");
+        UIPC_ASSERT(muscle_id_attr, "Rest mesh has no 'muscle_id' attribute.");
+        std::unordered_set<int> mesh_muscle_ids;
+        for(Float muscle_id : muscle_id_attr->view())
+        {
+            if(muscle_id > 0)
+                mesh_muscle_ids.insert(static_cast<int>(muscle_id));
+        }
+
+        // muscles missing from the csv get zero activation,
+        // csv columns of muscles missing from the mesh are dropped
+        auto [zero_activated, dropped_columns] =
+            match_activations_to_muscles(activations, mesh_muscle_ids);
+        if(!zero_activated.empty())
+        {
+            std::cout << fmt::format(
+                "Note: {} muscles have no activation data, they get a zero activation: {}\n",
+                zero_activated.size(),
+                fmt::join(zero_activated, ", "));
+        }
+        if(!dropped_columns.empty())
+        {
+            std::cout << fmt::format(
+                "Note: dropped activation data of {} muscles absent from the mesh: {}\n",
+                dropped_columns.size(),
+                fmt::join(dropped_columns, ", "));
+        }
+
         muscle_controller->read_activations(activations);
     }
 
     // 2D / 3D mesh export
     MeshExporter mesh_exporter(larva_mesh_slot, filetype);
     mesh_exporter.save_vertices_binary(0);
-    // mesh_exporter.muscle_groups_to_json(fmt::format("{}muscle_groups.json", output_path));
+    mesh_exporter.save_scene(0);  // static topology for the viewer (frame 0 obj)
+    mesh_exporter.muscle_groups_to_json(fmt::format("{}muscle_groups.json", output_path));
 
     int nb_frames = 0;
     if(muscle_control)
@@ -145,6 +177,7 @@ int main(int argc, char* argv[])
 
     for(int i = 0; i < nb_frames; i++)
     {
+        auto start = std::chrono::system_clock::now();
         if(muscle_control)
             muscle_controller->update_next_frame(larva_mesh_slot.geometry->geometry(), i);
 
@@ -152,7 +185,6 @@ int main(int argc, char* argv[])
         world.sync();
         world.retrieve();
 
-        auto start = std::chrono::system_clock::now();
 
         // mesh_exporter.save_scene(i + 1);
         mesh_exporter.save_vertices_binary(i + 1);
