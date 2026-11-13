@@ -1,6 +1,7 @@
 {
     "rest_geometry": "larva.msh",
     "curr_geometry": "larva_curr.msh",
+    "segment_interfaces": "segment_interfaces.json",
     "dt": 0.01,
     "gravity": true,
     "muscle_contraction_pattern": "muscle_pattern.csv",

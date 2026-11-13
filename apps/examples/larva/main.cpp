@@ -4,8 +4,12 @@
 #include <uipc/constitution/muscle.h>
 #include <uipc/core/muscle_controller_feature.h>
 #include <uipc/builtin/geometry_type.h>
+#include <uipc/common/enumerate.h>
 #include <fstream>
 #include <iostream>
+#include <tuple>
+#include <array>
+#include <algorithm>
 #include <unordered_set>
 #include "read_activation_csv.h"
 #include "mesh_export.h"
@@ -163,11 +167,102 @@ int main(int argc, char* argv[])
         muscle_controller->read_activations(activations);
     }
 
+    // ---- segment interfaces (optional) -------------------------------
+    // Groups of vertex indices sitting exactly on the segment boundary
+    // planes of the rest mesh (exported by larva-bodies' generate_tet_mesh
+    // alongside the mesh).  Their mean X position is written to
+    // segment_lengths.csv every frame, giving the segment lengths and their
+    // change relative to frame 0 during the simulation.
+    std::vector<std::tuple<std::string, std::vector<IndexT>>> interfaces;
+    std::vector<std::tuple<std::string, IndexT, IndexT>>      segments;  // anterior, posterior
+    std::ofstream segment_csv;
+    std::vector<Float> segment_lengths_0;
+
+    if(data.contains("segment_interfaces"))
+    {
+        std::ifstream segment_file(CONFIG_FOLDER
+                                    + data.at("segment_interfaces").get<std::string>());
+        UIPC_ASSERT(segment_file.is_open(), "Could not open segment interfaces file.");
+
+        Json segment_data;
+        segment_file >> segment_data;
+
+        for(auto& [name, entry] : segment_data.at("interfaces").items())
+        {
+            std::vector<IndexT> vertex_ids;
+            for(auto& id : entry.at("vertex_ids"))
+                vertex_ids.push_back(id.get<IndexT>());
+            interfaces.emplace_back(name, std::move(vertex_ids));
+        }
+
+        for(auto& [name, boundaries] : segment_data.at("segments").items())
+        {
+            std::array<IndexT, 2> boundary_ids{};
+            for(int k = 0; k < 2; ++k)
+            {
+                auto boundary_name = boundaries[k].get<std::string>();
+                auto it = std::find_if(interfaces.begin(),
+                                       interfaces.end(),
+                                       [&](const auto& interface) {
+                                           return std::get<0>(interface) == boundary_name;
+                                       });
+                UIPC_ASSERT(it != interfaces.end(),
+                            "Segment `{}` references unknown interface `{}`.",
+                            name,
+                            boundary_name);
+                boundary_ids[k] = static_cast<IndexT>(it - interfaces.begin());
+            }
+            segments.emplace_back(name, boundary_ids[0], boundary_ids[1]);
+        }
+
+        segment_csv.open(fmt::format("{}segment_lengths.csv", output_path));
+        segment_csv << "frame";
+        for(const auto& [name, vertex_ids] : interfaces)
+            segment_csv << fmt::format(",x_{}", name);
+        for(const auto& [name, anterior, posterior] : segments)
+            segment_csv << fmt::format(",length_{},dlength_{}", name, name);
+        segment_csv << "\n";
+    }
+
+    // mean X of every interface at the current frame, plus the segment
+    // lengths it derives (no-op when segment tracking is disabled)
+    auto write_segment_row = [&](int frame)
+    {
+        if(!segment_csv.is_open())
+            return;
+
+        auto positions = larva_mesh_slot.geometry->geometry().positions().view();
+
+        std::vector<Float> xs(interfaces.size());
+        for(auto&& [i, interface] : enumerate(interfaces))
+        {
+            const auto& [name, vertex_ids] = interface;
+            Float mean_x = 0;
+            for(auto id : vertex_ids)
+                mean_x += positions[id].x();
+            xs[i] = mean_x / static_cast<Float>(vertex_ids.size());
+        }
+
+        std::vector<Float> lengths(segments.size());
+        for(auto&& [s, segment] : enumerate(segments))
+            lengths[s] = xs[std::get<1>(segment)] - xs[std::get<2>(segment)];
+        if(segment_lengths_0.empty())
+            segment_lengths_0 = lengths;  // frame 0 is the reference
+
+        segment_csv << frame;
+        for(Float x : xs)
+            segment_csv << fmt::format(",{}", x);
+        for(auto&& [s, segment] : enumerate(segments))
+            segment_csv << fmt::format(",{},{}", lengths[s], lengths[s] - segment_lengths_0[s]);
+        segment_csv << "\n";
+    };
+
     // 2D / 3D mesh export
     MeshExporter mesh_exporter(larva_mesh_slot, filetype);
     mesh_exporter.save_vertices_binary(0);
     mesh_exporter.save_scene(0);  // static topology for the viewer (frame 0 obj)
     mesh_exporter.muscle_groups_to_json(fmt::format("{}muscle_groups.json", output_path));
+    write_segment_row(0);
 
     int nb_frames = 0;
     if(muscle_control)
@@ -188,6 +283,7 @@ int main(int argc, char* argv[])
 
         // mesh_exporter.save_scene(i + 1);
         mesh_exporter.save_vertices_binary(i + 1);
+        write_segment_row(i + 1);
 
         auto end = std::chrono::system_clock::now();
         std::cout << fmt::format(

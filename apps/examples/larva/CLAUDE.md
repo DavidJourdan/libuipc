@@ -65,6 +65,7 @@ python3 pack.py --data ~/code/larva-viewer/data \
 | `pack.py` | Packs `larva_vertices*.npy`/`muscle_vertices*.npy` into `.lvf` for the viewer |
 | `larva.msh` | Rest mesh (tetrahedral, with muscle data) |
 | `larva_curr.msh` | Frame-0 pose for the hunch (from a drop run) |
+| `segment_interfaces.json` | Interface vertex indices on the segment boundary planes (from the pipeline) |
 | `muscle_pattern.csv` | Per-muscle activation time series |
 
 ## Mesh format
@@ -76,11 +77,19 @@ with two per-tetrahedron `$ElementData` fields:
 - `direction` (3-vector): muscle contraction direction used by the `Muscle`
   constitution.
 
-**Scale:** meshes come out of the segmentation pipeline at extent ~1.0.
-Before simulation they must be rescaled by **0.005** (about the origin) to
-match the tuned parameters (`d_hat = 2e-5`, `ground_height = -0.001`); see
-commit `4c08a964` "rescale mesh". `larva.msh` is already rescaled; a fresh
-mesh from the pipeline is not.
+**Scale:** meshes come out of the segmentation pipeline at extent ~1.0. The
+pipeline can now emit the mesh directly at simulation scale
+(`generate_tet_mesh.py --length 0.005`); the committed `larva.msh` is at
+that scale. Rescaling by hand is only needed for meshes produced without
+`--length`.
+
+**Segment interfaces:** `generate_tet_mesh.py` also cuts the mesh along the
+segment boundary planes (T3-A1, A1-A2, A2-A3, A3-A4) so vertices sit exactly
+on them, and writes `segment_interfaces.json` (interface vertex indices +
+which boundary pairs define segment lengths A1..A3). When the config has a
+`segment_interfaces` key, every frame appends the mean X of each interface
+and the A1/A2/A3 lengths (and their change vs frame 0) to
+`segment_lengths.csv` in the output folder.
 
 ## Muscles & activations
 
@@ -117,6 +126,7 @@ mesh from the pipeline is not.
 | `muscle_passive` | Passive muscle stiffness |
 | `muscle_active` | Active modulus scale (activations are multiplied by it) |
 | `muscle_contraction_pattern` | Activation csv; presence + `muscle_active > 0` enables muscle control |
+| `segment_interfaces` | Interface vertex-index json; enables the `segment_lengths.csv` export |
 | `nb_frames` | Frame count when muscle control is disabled |
 
 ## Known pitfalls
