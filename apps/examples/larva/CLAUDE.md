@@ -92,9 +92,11 @@ mesh from the pipeline is not.
   - mesh muscles with no csv column → **zero activation**;
   - csv columns for muscles absent from the mesh → **dropped** (otherwise the
     muscle controller would index out of bounds).
-- Reference counts: the current `larva.msh` (2026-11 segmentation) has 564
-  muscle ids; `muscle_pattern.csv` has 452 columns: 114 mesh muscles are
-  csv-less (zero-activated) and ids 223/273 are absent from the mesh (dropped).
+- `muscle_pattern.csv` is padded to exactly match the mesh: it has one column
+  per muscle id of `larva.msh` (564; columns for mesh muscles without data
+  are zero-filled, columns for muscles absent from the mesh are removed).
+  `match_activations_to_muscles()` stays as a safety net for future meshes
+  that skip the padding step.
 
 ## Code style (app-specific)
 
