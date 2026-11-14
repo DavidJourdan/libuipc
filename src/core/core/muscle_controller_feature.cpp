@@ -1,10 +1,12 @@
 #include <uipc/core/muscle_controller_feature.h>
-#include <iostream>
+#include <uipc/common/log.h>
+#include <fmt/ranges.h>
+#include <algorithm>
+#include <vector>
 
 namespace uipc::core
 {
-MuscleControllerFeature::MuscleControllerFeature(
-    S<MuscleControllerFeatureOverrider> overrider)
+MuscleControllerFeature::MuscleControllerFeature(S<MuscleControllerFeatureOverrider> overrider)
     : m_impl(std::move(overrider))
 {
 }
@@ -45,41 +47,55 @@ void MuscleControllerFeature::read_muscle_groups_from(geometry::SimplicialComple
 
 void MuscleControllerFeature::read_activations(const std::unordered_map<int, std::vector<float>>& activation_dict)
 {
-    // Check if dictionary is empty
-    UIPC_ASSERT(activation_dict.size() > 0, "[MuscleControllerFeature] activation dict is empty");
+    UIPC_ASSERT(!activation_dict.empty(), "[MuscleControllerFeature] activation dict is empty");
+    UIPC_ASSERT(!muscle_groups.empty(),
+                "[MuscleControllerFeature] no muscle groups read yet, call read_muscle_groups_from() first");
 
-    // Get the size of the first vector (assuming all vectors have same size)
-    int nb_frames = activation_dict.begin()->second.size();
-    int nb_muscles = activation_dict.size();
+    // the frame count is dictated by the csv, all columns must agree on it
+    int nb_frames = static_cast<int>(activation_dict.begin()->second.size());
 
-    UIPC_ASSERT(nb_muscles == muscle_groups.size(), "[MuscleControllerFeature] incorrect number of muscles in activation dict");
+    // muscles without an activation column simply keep their zero activation
+    activations = Eigen::MatrixXd::Zero(static_cast<int>(muscle_groups.size()), nb_frames);
 
-    // Create Eigen matrix with dimensions (nb_muscles, nb_frames)
-    activations = Eigen::MatrixXd(nb_muscles, nb_frames);
+    std::vector<int> dropped;
+    for(const auto& [muscle_id, values] : activation_dict)
+    {
+        UIPC_ASSERT(static_cast<int>(values.size()) == nb_frames,
+                    "[MuscleControllerFeature] inconsistent number of frames provided in activation dict");
 
-    // Fill the matrix
-    for (const auto& [key, values] : activation_dict) {
-        // Check that all vectors have same size
-        UIPC_ASSERT(values.size() == nb_frames, "[MuscleControllerFeature] inconsistent number of frames provided in activation dict");
-
-        // Copy values to the matrix row
-        for (int col = 0; col < nb_frames; ++col) {
-            activations(muscle_ids_to_idx[key], col) = values[col];
+        bool known = muscle_id >= 0
+                     && muscle_id < static_cast<int>(muscle_ids_to_idx.size())
+                     && muscle_ids_to_idx[muscle_id] >= 0;
+        if(!known)
+        {
+            dropped.push_back(muscle_id);  // csv column of a muscle absent from the mesh
+            continue;
         }
+
+        for(int col = 0; col < nb_frames; ++col)
+            activations(muscle_ids_to_idx[muscle_id], col) = values[col];
+    }
+
+    if(!dropped.empty())
+    {
+        std::sort(dropped.begin(), dropped.end());
+        logger::warn("[MuscleControllerFeature] dropped activation data of {} muscles absent from the mesh: {}",
+                     dropped.size(),
+                     fmt::join(dropped, ", "));
     }
 }
 
 void MuscleControllerFeature::update_next_frame(geometry::SimplicialComplex& geo, int frame_id)
 {
     UIPC_ASSERT(frame_id < activations.cols() && frame_id >= 0,
-            "[MuscleControllerFeature] Size mismatch: "
-            "frame_id = {} does not match activation size = {}.",
-            frame_id,
-            activations.cols());
+                "[MuscleControllerFeature] Size mismatch: "
+                "frame_id = {} does not match activation size = {}.",
+                frame_id,
+                activations.cols());
 
     UIPC_ASSERT(active_modulus > 0, "[MuscleControllerFeature] active_modulus has not been set.");
 
-    auto attr = geo.tetrahedra().find<Float>("active_modulus");
+    auto attr      = geo.tetrahedra().find<Float>("active_modulus");
     auto attr_view = view(*attr);
 
     for(int i = 0; i < activations.rows(); ++i)

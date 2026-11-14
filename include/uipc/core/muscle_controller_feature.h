@@ -23,18 +23,23 @@ class UIPC_CORE_API MuscleControllerFeature : public Feature
     void copy_active_coeffs_from(geometry::SimplicialComplex& geo);
 
     void read_muscle_groups_from(geometry::SimplicialComplex& geo);
+
+    // Reads the per-muscle activation time series. Requires
+    // read_muscle_groups_from() to have been called first. Muscles of the
+    // mesh without a csv column simply get a zero activation; columns of
+    // muscles absent from the mesh are dropped (with a warning).
     void read_activations(const std::unordered_map<int, std::vector<float>>& activations);
     void update_next_frame(geometry::SimplicialComplex& geo, int frame_id);
     void set_active_modulus(Float coeff) { active_modulus = coeff; }
-    int nb_frames() { return activations.cols(); }
+    int  nb_frames() { return activations.cols(); }
 
   private:
-    virtual std::string_view get_name() const override;
+    virtual std::string_view            get_name() const override;
     S<MuscleControllerFeatureOverrider> m_impl;
 
-    std::vector<int> muscle_ids_to_idx;
+    std::vector<int>              muscle_ids_to_idx;
     std::vector<std::vector<int>> muscle_groups;
-    Eigen::MatrixXd activations;
+    Eigen::MatrixXd               activations;
 
     Float active_modulus = -1;
 };

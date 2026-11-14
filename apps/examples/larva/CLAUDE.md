@@ -60,8 +60,9 @@ python3 pack.py --data ~/code/larva-viewer/data \
 | File | Role |
 |------|------|
 | `main.cpp` | Simulation setup driven by a json config |
-| `read_activation_csv.h` | CSV parsing, resampling to `dt`, mesh↔csv muscle reconciliation |
+| `read_activation_csv.h` | CSV parsing, resampling to `dt` |
 | `mesh_export.h` | `MeshExporter` (npy vertex export, msh save, muscle-group json) |
+| `segment_tracker.h` | `SegmentTracker` (segment_lengths.csv export from interface vertex ids) |
 | `pack.py` | Not in this folder — it lives at `~/code/larva-viewer/pack.py`; it packs the exported `*_vertices*.npy` into `.lvf.gz` for the viewer |
 | `larva.msh` | Rest mesh (tetrahedral, with muscle data) |
 | `larva_curr.msh` | Frame-0 pose for the hunch (from a drop run) |
@@ -87,25 +88,23 @@ that scale. Rescaling by hand is only needed for meshes produced without
 segment boundary planes (T3-A1, A1-A2, A2-A3, A3-A4) so vertices sit exactly
 on them, and writes `segment_interfaces.json` (interface vertex indices +
 which boundary pairs define segment lengths A1..A3). When the config has a
-`segment_interfaces` key, every frame appends the mean X of each interface
-and the A1/A2/A3 lengths (and their change vs frame 0) to
-`segment_lengths.csv` in the output folder.
+`segment_interfaces` key, `SegmentTracker` (`segment_tracker.h`) appends the
+mean X of each interface and the A1/A2/A3 lengths (and their change vs
+frame 0) to `segment_lengths.csv` every frame.
 
 ## Muscles & activations
 
 - `muscle_pattern.csv`: first column is time in seconds, remaining headers are
   muscle ids. It is linearly resampled to the simulation `dt`.
-- The muscle set of the mesh and the csv columns need not match exactly.
-  `match_activations_to_muscles()` (called from `main.cpp` after resampling)
-  reconciles them and prints what it did:
-  - mesh muscles with no csv column → **zero activation**;
-  - csv columns for muscles absent from the mesh → **dropped** (otherwise the
-    muscle controller would index out of bounds).
+- The muscle set of the mesh and the csv columns need not match exactly;
+  `MuscleControllerFeature::read_activations()` reconciles them itself:
+  - mesh muscles with no csv column → **zero activation** (silently, that is
+    the documented semantic);
+  - csv columns for muscles absent from the mesh → **dropped**, with a
+    `logger::warn` listing the ids.
 - `muscle_pattern.csv` is padded to exactly match the mesh: it has one column
   per muscle id of `larva.msh` (564; columns for mesh muscles without data
   are zero-filled, columns for muscles absent from the mesh are removed).
-  `match_activations_to_muscles()` stays as a safety net for future meshes
-  that skip the padding step.
 
 ## Code style (app-specific)
 

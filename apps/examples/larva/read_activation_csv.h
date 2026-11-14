@@ -4,7 +4,6 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 #include <stdexcept>
 #include <tuple>
@@ -17,20 +16,24 @@ namespace details
 // Helper to strip trailing carriage returns ('\r') for cross-platform support (Windows/Linux/macOS)
 inline void trim_cr(std::string& s)
 {
-    if (!s.empty() && s.back() == '\r')
+    if(!s.empty() && s.back() == '\r')
     {
         s.pop_back();
     }
 }
 
 // 1D Linear Interpolation helper for monotonically increasing time series
-inline float interpolate_1d(const std::vector<float>& times, const std::vector<float>& values, float t)
+inline float interpolate_1d(const std::vector<float>& times,
+                            const std::vector<float>& values,
+                            float                     t)
 {
-    if (t <= times.front()) return values.front();
-    if (t >= times.back()) return values.back();
+    if(t <= times.front())
+        return values.front();
+    if(t >= times.back())
+        return values.back();
 
     // Binary search for upper bound
-    auto it = std::upper_bound(times.begin(), times.end(), t);
+    auto   it   = std::upper_bound(times.begin(), times.end(), t);
     size_t idx1 = std::distance(times.begin(), it);
     size_t idx0 = idx1 - 1;
 
@@ -42,7 +45,7 @@ inline float interpolate_1d(const std::vector<float>& times, const std::vector<f
     float alpha = (t - t0) / (t1 - t0);
     return (1.0f - alpha) * v0 + alpha * v1;
 }
-} // namespace details
+}  // namespace details
 
 /**
  * @brief Reads timestamps and muscle activation coefficients from a CSV file.
@@ -57,10 +60,11 @@ inline float interpolate_1d(const std::vector<float>& times, const std::vector<f
  *         - Element 0: Full sequence of time stamps from column 0.
  *         - Element 1: Mapping of muscle_id -> activation time series.
  */
-inline std::tuple<std::vector<float>, std::unordered_map<int, std::vector<float>>> read_activation_csv(const std::string& csv_path)
+inline std::tuple<std::vector<float>, std::unordered_map<int, std::vector<float>>> read_activation_csv(
+    const std::string& csv_path)
 {
     std::ifstream file(csv_path);
-    if (!file.is_open())
+    if(!file.is_open())
     {
         throw std::runtime_error("[read_activation_csv] Failed to open CSV file: " + csv_path);
     }
@@ -68,29 +72,29 @@ inline std::tuple<std::vector<float>, std::unordered_map<int, std::vector<float>
     std::string line;
 
     // 1. Parse Header Row: time (s), muscle_id1, muscle_id2, ...
-    if (!std::getline(file, line))
+    if(!std::getline(file, line))
     {
         throw std::runtime_error("[read_activation_csv] CSV file is empty: " + csv_path);
     }
 
     details::trim_cr(line);
     std::stringstream header_stream(line);
-    std::string cell;
+    std::string       cell;
 
     // Skip the first column header (e.g., "time (s)")
-    if (!std::getline(header_stream, cell, ','))
+    if(!std::getline(header_stream, cell, ','))
     {
         throw std::runtime_error("[read_activation_csv] Invalid CSV header format in: " + csv_path);
     }
 
-    std::vector<int> column_to_muscle_id;
+    std::vector<int>                            column_to_muscle_id;
     std::unordered_map<int, std::vector<float>> activation_dict;
 
     // Read muscle IDs from column 1 onwards
-    while (std::getline(header_stream, cell, ','))
+    while(std::getline(header_stream, cell, ','))
     {
         details::trim_cr(cell);
-        if (cell.empty())
+        if(cell.empty())
             continue;
 
         int muscle_id = std::stoi(cell);
@@ -100,50 +104,53 @@ inline std::tuple<std::vector<float>, std::unordered_map<int, std::vector<float>
         activation_dict[muscle_id] = std::vector<float>();
     }
 
-    if (column_to_muscle_id.empty())
+    if(column_to_muscle_id.empty())
     {
-        throw std::runtime_error("[read_activation_csv] No muscle IDs found in CSV header: " + csv_path);
+        throw std::runtime_error("[read_activation_csv] No muscle IDs found in CSV header: "
+                                 + csv_path);
     }
 
     // 2. Parse Data Rows
     std::vector<float> times;
 
-    while (std::getline(file, line))
+    while(std::getline(file, line))
     {
         details::trim_cr(line);
-        if (line.empty())
+        if(line.empty())
             continue;
 
         std::stringstream line_stream(line);
 
         // Parse time value in column 0
-        if (!std::getline(line_stream, cell, ','))
+        if(!std::getline(line_stream, cell, ','))
             continue;
 
         details::trim_cr(cell);
-        if (!cell.empty())
+        if(!cell.empty())
         {
             times.push_back(std::stof(cell));
         }
 
         // Parse muscle activation values in remaining columns
         size_t col_idx = 0;
-        while (std::getline(line_stream, cell, ',') && col_idx < column_to_muscle_id.size())
+        while(std::getline(line_stream, cell, ',')
+              && col_idx < column_to_muscle_id.size())
         {
             details::trim_cr(cell);
-            if (!cell.empty())
+            if(!cell.empty())
             {
-                float val = std::stof(cell);
-                int muscle_id = column_to_muscle_id[col_idx];
+                float val       = std::stof(cell);
+                int   muscle_id = column_to_muscle_id[col_idx];
                 activation_dict[muscle_id].push_back(val);
             }
             col_idx++;
         }
     }
 
-    if (times.size() < 2)
+    if(times.size() < 2)
     {
-        throw std::runtime_error("[read_activation_csv] File contains fewer than 2 data frames: " + csv_path);
+        throw std::runtime_error("[read_activation_csv] File contains fewer than 2 data frames: "
+                                 + csv_path);
     }
 
     return {times, activation_dict};
@@ -160,30 +167,30 @@ inline std::tuple<std::vector<float>, std::unordered_map<int, std::vector<float>
  * @return std::unordered_map<int, std::vector<float>> Resampled activation dictionary.
  */
 inline std::unordered_map<int, std::vector<float>> resample_activations(
-    const std::vector<float>& times,
+    const std::vector<float>&                          times,
     const std::unordered_map<int, std::vector<float>>& activation_dict,
-    float target_dt,
-    float eps = 1e-6f)
+    float                                              target_dt,
+    float                                              eps = 1e-6f)
 {
-    if (times.size() < 2)
+    if(times.size() < 2)
     {
         throw std::invalid_argument("[resample_activations] At least 2 time points are required.");
     }
-    if (target_dt <= 0.0f)
+    if(target_dt <= 0.0f)
     {
         throw std::invalid_argument("[resample_activations] target_dt must be positive.");
     }
 
     // 1. Compute average dt from original times
-    float t_start = times.front();
-    float t_end = times.back();
+    float t_start        = times.front();
+    float t_end          = times.back();
     float total_duration = t_end - t_start;
     float avg_dt = total_duration / static_cast<float>(times.size() - 1);
 
     // 2. Check if resampling is needed
-    if (std::abs(avg_dt - target_dt) <= eps)
+    if(std::abs(avg_dt - target_dt) <= eps)
     {
-        return activation_dict; // No resampling needed
+        return activation_dict;  // No resampling needed
     }
 
     // 3. Construct new time grid
@@ -199,12 +206,12 @@ inline std::unordered_map<int, std::vector<float>> resample_activations(
     // 4. Resample activations for each muscle ID using linear interpolation
     std::unordered_map<int, std::vector<float>> resampled_dict;
 
-    for (const auto& [muscle_id, values] : activation_dict)
+    for(const auto& [muscle_id, values] : activation_dict)
     {
         std::vector<float> resampled_values;
         resampled_values.reserve(resampled_times.size());
 
-        for (float t_target : resampled_times)
+        for(float t_target : resampled_times)
         {
             float interpolated_val = details::interpolate_1d(times, values, t_target);
             resampled_values.push_back(interpolated_val);
@@ -214,65 +221,4 @@ inline std::unordered_map<int, std::vector<float>> resample_activations(
     }
 
     return resampled_dict;
-}
-
-/**
- * @brief Reconciles an activation dict with the muscle ids present in the mesh.
- *
- * Muscles of the mesh that have no activation data get a zero activation for
- * every frame. Activation columns of muscles that do not exist in the mesh are
- * dropped, otherwise the muscle controller would write activations out of
- * bounds. After this call, the keys of activation_dict are exactly
- * mesh_muscle_ids.
- *
- * @param activation_dict Map of muscle_id -> activation time series (modified in place).
- * @param mesh_muscle_ids Set of muscle ids (all > 0) present in the mesh.
- * @return std::tuple<std::vector<int>, std::vector<int>> Sorted lists of the ids that
- *         were zero-activated (muscles of the mesh absent from the csv) and dropped
- *         (csv columns for muscles that do not exist in the mesh).
- */
-inline std::tuple<std::vector<int>, std::vector<int>> match_activations_to_muscles(
-    std::unordered_map<int, std::vector<float>>& activation_dict,
-    const std::unordered_set<int>& mesh_muscle_ids)
-{
-    std::vector<int> zero_activated;
-    std::vector<int> dropped;
-
-    if (activation_dict.empty())
-    {
-        throw std::invalid_argument("[match_activations_to_muscles] activation dict is empty.");
-    }
-    if (mesh_muscle_ids.empty())
-    {
-        throw std::invalid_argument("[match_activations_to_muscles] mesh has no muscle.");
-    }
-
-    const size_t nb_frames = activation_dict.begin()->second.size();
-
-    for (int muscle_id : mesh_muscle_ids)
-    {
-        if (!activation_dict.contains(muscle_id))
-        {
-            zero_activated.push_back(muscle_id);
-            activation_dict[muscle_id] = std::vector<float>(nb_frames, 0.0f);
-        }
-    }
-
-    for (auto it = activation_dict.begin(); it != activation_dict.end();)
-    {
-        if (!mesh_muscle_ids.contains(it->first))
-        {
-            dropped.push_back(it->first);
-            it = activation_dict.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
-    }
-
-    std::sort(zero_activated.begin(), zero_activated.end());
-    std::sort(dropped.begin(), dropped.end());
-
-    return {zero_activated, dropped};
 }
