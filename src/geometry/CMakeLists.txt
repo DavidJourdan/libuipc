@@ -1,7 +1,8 @@
 find_package(libigl REQUIRED)
 find_package(TBB REQUIRED)
 find_package(Octree CONFIG REQUIRED)
-# METIS is built from source in external/METIS (not vcpkg)
+
+add_subdirectory(metis)
 
 add_library(uipc_geometry SHARED)
 add_library(uipc::geometry ALIAS uipc_geometry)
@@ -15,7 +16,7 @@ target_link_libraries(uipc_geometry PRIVATE
     igl::igl_core
     Octree::Octree
     TBB::tbb
-    metis
+    uipc_metis
 )
 
 if(UIPC_WITH_VDB_SUPPORT)
@@ -24,7 +25,7 @@ endif()
 
 target_compile_definitions(uipc_geometry PRIVATE UIPC_GEOMETRY_EXPORT_DLL=1) # export dll
 
-file(GLOB SOURCES "*.cpp" "*.h" "details/*.inl")
+file(GLOB SOURCES CONFIGURE_DEPENDS "*.cpp" "*.h" "details/*.inl")
 target_sources(uipc_geometry PRIVATE ${SOURCES})
 
 uipc_target_set_output_directory(uipc_geometry)
@@ -33,13 +34,14 @@ uipc_target_set_rpath(uipc_geometry)
 # ------------------------------------------------------------------------------
 # setup source group for the IDE
 # ------------------------------------------------------------------------------
-file(GLOB_RECURSE SOURCE_GROUP_FILES "*.h" "*.cpp" "*.inl")
+file(GLOB_RECURSE SOURCE_GROUP_FILES CONFIGURE_DEPENDS "*.h" "*.cpp" "*.inl")
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/.." FILES ${SOURCE_GROUP_FILES})
 
 add_subdirectory(implicit_geometries)
 add_subdirectory(affine_body)
 add_subdirectory(bvh)
 add_subdirectory(graph_coloring)
+add_subdirectory(tetrahedralization)
 
 uipc_target_set_relative_source_file(uipc_geometry)
 

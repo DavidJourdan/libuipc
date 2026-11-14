@@ -8,7 +8,6 @@
 #include <line_search/line_searcher.h>
 #include <linear_system/global_linear_system.h>
 #include <animator/global_animator.h>
-#include <external_force/global_external_force_manager.h>
 #include <diff_sim/global_diff_sim_manager.h>
 #include <newton_tolerance/newton_tolerance_manager.h>
 #include <time_integrator/time_integrator_manager.h>
@@ -86,6 +85,7 @@ void SimEngine::advance()
         {
             Timer timer{"Compute CFL Condition"};
             cfl_alpha = m_global_contact_manager->compute_cfl_condition();
+            m_frame_last_cfl_alpha = cfl_alpha;
             if(cfl_alpha < alpha)
             {
                 logger::info("CFL Filter: {} < {}", cfl_alpha, alpha);
@@ -102,10 +102,33 @@ void SimEngine::advance()
         {
             Timer timer{"Filter CCD TOI"};
             ccd_alpha = m_global_trajectory_filter->filter_toi(alpha);
-            if(ccd_alpha < alpha)
+            m_frame_last_ccd_toi = ccd_alpha;
+            // ccd_alpha is a fraction of the swept step `alpha`; compose to
+            // get the absolute step fraction
+            Float absolute_alpha = alpha * ccd_alpha;
+            if(absolute_alpha < alpha)
             {
-                logger::info("CCD Filter: {} < {}", ccd_alpha, alpha);
-                return ccd_alpha;
+                logger::info("CCD Filter: {} < {}", absolute_alpha, alpha);
+                return absolute_alpha;
+            }
+        }
+
+        return alpha;
+    };
+
+    // Stiff-GIPC design: cap the step with the feasible step over the active
+    // contact set (each active pair keeps at least 20% of its current gap),
+    // so the swept-AABB trajectory candidates generated afterwards are fewer.
+    auto feasible_step = [this](Float alpha)
+    {
+        if(m_global_contact_manager)
+        {
+            Timer timer{"Compute Feasible Step"};
+            Float feasible_alpha = m_global_contact_manager->compute_feasible_step();
+            if(feasible_alpha < alpha)
+            {
+                logger::info("Feasible Step Filter: {} < {}", feasible_alpha, alpha);
+                return feasible_alpha;
             }
         }
 
@@ -129,29 +152,6 @@ void SimEngine::advance()
 
         // Compute New Energy => E
         return m_line_searcher->compute_energy(false);
-    };
-
-    auto step_animation = [this]()
-    {
-        // NEW LIFECYCLE: Clear and prepare external forces BEFORE animator step
-        if(m_global_external_force_manager)
-        {
-            Timer timer{"Clear External Forces"};
-            m_global_external_force_manager->clear();
-        }
-
-        if(m_global_animator)
-        {
-            Timer timer{"Step Animation"};
-            m_global_animator->step();
-        }
-
-        // NEW LIFECYCLE: Compute external force accelerations AFTER animator step
-        if(m_global_external_force_manager)
-        {
-            Timer timer{"Compute External Force Accelerations"};
-            m_global_external_force_manager->step();
-        }
     };
 
     auto compute_animation_substep_ratio = [this](SizeT newton_iter)
@@ -182,7 +182,11 @@ void SimEngine::advance()
         if(m_semi_implicit_enabled)
         {
             // Ref: https://arxiv.org/abs/2512.12151, Algorithm 1.
-            auto k_min = m_newton_min_iter->view()[0];
+            // newton/semi_implicit/K_min plays Stiff-GIPC's Kmin role: beta
+            // accumulation only starts from this iteration on; it is not a
+            // floor on the Newton iteration count (that is newton/min_iter,
+            // default 0 = no forced minimum).
+            auto k_min = m_semi_implicit_kmin->view()[0];
             auto eps   = m_semi_implicit_beta_tol;
             if(newton_iter >= k_min)
                 beta = (1.0 - alpha) * beta;
@@ -215,18 +219,34 @@ void SimEngine::advance()
         }
     };
 
-    auto check_line_search_iter = [this](SizeT line_search_iter_after_loop)
+    auto check_line_search_iter = [&](SizeT line_search_iter_after_loop, Float E0, Float last_E)
     {
         if(line_search_iter_after_loop >= m_line_searcher->max_iter())
         {
-            logger::warn("Line Search Exits with Max Iteration: {} (Frame={}, Newton={})",
-                         m_line_searcher->max_iter(),
-                         m_current_frame,
-                         m_newton_iter);
+            m_frame_hit_line_search_limit = true;
+            // alpha was halved once more after the last failed try,
+            // so the last actually tried step length is 2*alpha
+            Float alpha_last = 2.0 * alpha;
+            Float abs_E0     = std::abs(E0);
+            Float rel_E_increase = (last_E - E0) / (abs_E0 > 1e-30 ? abs_E0 : 1e-30);
+            auto detail = fmt::format(
+                "Line Search Exits with Max Iteration: {} (Frame={}, Newton={}, "
+                "alpha_last={}, E0={:.6e}, E_last={:.6e}, rel_E_increase={:.3e}, "
+                "ccd_alpha={}, cfl_alpha={})",
+                m_line_searcher->max_iter(),
+                m_current_frame,
+                m_newton_iter,
+                alpha_last,
+                E0,
+                last_E,
+                rel_E_increase,
+                ccd_alpha,
+                cfl_alpha);
+            logger::warn("{}", detail);
 
             if(m_strict_mode->view()[0])
             {
-                throw SimEngineException("StrictMode: Line Search Exits with Max Iteration");
+                throw SimEngineException("StrictMode: " + detail);
             }
         }
     };
@@ -236,6 +256,7 @@ void SimEngine::advance()
         auto newton_max = m_newton_max_iter->view()[0];
         if(newton_iter_after_loop >= newton_max)
         {
+            m_frame_hit_newton_limit = true;
             logger::warn("Newton Iteration Exits with Max Iteration: {} (Frame={})",
                          newton_max,
                          m_current_frame);
@@ -247,9 +268,8 @@ void SimEngine::advance()
         }
         else
         {
-            logger::info("Newton Iteration Converged with Iteration Count: {}, Bound: [{}, {}]",
+            logger::info("Newton Iteration Converged with Iteration Count: {}, Max: {}",
                          newton_iter_after_loop,
-                         m_newton_min_iter->view()[0],
                          newton_max);
         }
     };
@@ -266,6 +286,7 @@ void SimEngine::advance()
         Timer timer{"Pipeline"};
 
         ++m_current_frame;
+        reset_frame_stats();
 
         logger::info(R"(>>> Begin Frame: {})", m_current_frame);
 
@@ -306,7 +327,7 @@ void SimEngine::advance()
             m_state = SimEngineState::PredictMotion;
             // MUST step animation before predicting dof
             // some animation may provide information for DOF prediction
-            step_animation();
+            step_animation_and_external_forces();
             m_time_integrator_manager->predict_dof();
 
             // 3. Adaptive Parameter Calculation
@@ -323,7 +344,8 @@ void SimEngine::advance()
             for(; newton_iter < newton_max_iter; ++newton_iter)
             {
                 Timer timer{"Newton Iteration"};
-                m_newton_iter = newton_iter;
+                m_newton_iter             = newton_iter;
+                m_frame_newton_iterations = newton_iter + 1;
 
                 // 1) Compute animation substep ratio
                 compute_animation_substep_ratio(newton_iter);
@@ -346,6 +368,8 @@ void SimEngine::advance()
                 {
                     Timer timer{"Solve Global Linear System"};
                     m_global_linear_system->solve();
+                    m_frame_linear_solver_iterations +=
+                        m_global_linear_system->last_solve_iterations();
                 }
 
 
@@ -369,6 +393,12 @@ void SimEngine::advance()
                         dump_global_surface_pre_ccd(newton_iter);
                     }
 
+                    // Stiff-GIPC design: cap the step with the feasible step
+                    // over the active contact set first, then generate the
+                    // swept-AABB trajectory candidates over the capped step
+                    // (fewer candidates than over the full step)
+                    alpha = feasible_step(alpha);
+
                     detect_trajectory_candidates(alpha);
 
                     // Compute Current Energy => E_0
@@ -377,21 +407,28 @@ void SimEngine::advance()
                     // CCD filter
                     alpha = filter_toi(alpha);
 
-                    // CFL Condition
-                    alpha = cfl_condition(alpha);
+                    // CFL Condition (Stiff-GIPC design: the per-step speed cap
+                    // applies only when some trajectory pair actually hits within
+                    // this step; in free flight it must not bite)
+                    if(ccd_alpha < 1.0)
+                        alpha = cfl_condition(alpha);
 
                     // Line Search Iteration
                     bool  converged        = convergence_check(newton_iter);
                     SizeT line_search_iter = 0;
+                    Float last_E           = E0;
                     for(; line_search_iter < m_line_searcher->max_iter(); ++line_search_iter)
                     {
                         Timer timer{"Line Search Iteration"};
                         m_line_search_iter = line_search_iter;
+                        ++m_frame_line_search_trials;
+                        m_frame_last_line_search_alpha = alpha;
 
                         // Compute Test Energy:
                         //  * Step Forward => x = x_0 + alpha * dx
                         //  * Compute New Energy => E
                         Float E = compute_energy(alpha);
+                        last_E  = E;
 
                         // To prevent numerical energy (fake-) increasing caused by tiny dx
                         if(converged)
@@ -414,11 +451,16 @@ void SimEngine::advance()
                     }
 
                     // Check Line Search Iteration: report warnings or throw exceptions if needed
-                    check_line_search_iter(line_search_iter);
+                    check_line_search_iter(line_search_iter, E0, last_E);
 
+                    // newton/min_iter is a pure hard floor (default 0 = off);
+                    // the semi-implicit Kmin lives in newton/semi_implicit/K_min
                     bool terminated = converged && (newton_iter >= newton_min_iter);
                     if(terminated)
+                    {
+                        m_frame_converged = true;
                         break;
+                    }
                 }
             }
 
@@ -432,6 +474,7 @@ void SimEngine::advance()
             // Check Newton Iteration
             // report warnings or throw exceptions if needed
             check_newton_iter(newton_iter);
+            m_frame_completed = true;
         }
 
         logger::info("<<< End Frame: {}", m_current_frame);

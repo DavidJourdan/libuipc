@@ -1,23 +1,31 @@
 #include <sim_engine.h>
 #include <uipc/common/log.h>
-#include <muda/muda.h>
+#include <cuda_tool/cuda_tool.h>
 #include <kernel_cout.h>
 #include <backends/common/module.h>
 #include <global_geometry/global_vertex_manager.h>
 #include <global_geometry/global_simplicial_surface_manager.h>
+#include <animator/global_animator.h>
+#include <external_force/global_external_force_manager.h>
 #include <uipc/common/timer.h>
 #include <backends/common/backend_path_tool.h>
 #include <uipc/backend/engine_create_info.h>
 
 namespace uipc::backend::cuda
 {
+namespace
+{
+    __global__ void say_hello_from_cuda_kernel(cuda_tool::LoggerViewer cout)
+    {
+        cout << "CUDA Backend Kernel Console Init Success!\n";
+    }
+}  // namespace
+
 void say_hello_from_cuda()
 {
-    using namespace muda;
-    Launch()
-        .apply([cout = KernelCout::viewer()] __device__() mutable
-               { cout << "CUDA Backend Kernel Console Init Success!\n"; })
-        .wait();
+    // muda Launch() defaults to a 1x1 launch on the default stream
+    say_hello_from_cuda_kernel<<<1, 1, 0, nullptr>>>(KernelCout::viewer());
+    CUDA_TOOL_CHECK(cudaStreamSynchronize(nullptr));
 }
 
 SimEngine::SimEngine(EngineCreateInfo* info)
@@ -25,7 +33,7 @@ SimEngine::SimEngine(EngineCreateInfo* info)
 {
     try
     {
-        using namespace muda;
+        using namespace cuda_tool;
 
         logger::info("Initializing Cuda Backend...");
 
@@ -33,7 +41,7 @@ SimEngine::SimEngine(EngineCreateInfo* info)
 
         // get gpu device count
         int device_count;
-        checkCudaErrors(cudaGetDeviceCount(&device_count));
+        CUDA_TOOL_CHECK(cudaGetDeviceCount(&device_count));
         if(device_id >= device_count)
         {
             UIPC_WARN_WITH_LOCATION("Cannot find device with id {}. Using device 0 instead.",
@@ -43,18 +51,18 @@ SimEngine::SimEngine(EngineCreateInfo* info)
         }
 
         cudaDeviceProp prop;
-        checkCudaErrors(cudaGetDeviceProperties(&prop, device_id));
+        CUDA_TOOL_CHECK(cudaGetDeviceProperties(&prop, device_id));
         logger::info("Device: [{}] {}", device_id, prop.name);
         logger::info("Compute Capability: {}.{}", prop.major, prop.minor);
         logger::info("Total Global Memory: {} MB", prop.totalGlobalMem / 1024 / 1024);
 
-        Timer::set_sync_func([] { muda::wait_device(); });
+        Timer::set_sync_func([] { cuda_tool::wait_device(); });
 
         say_hello_from_cuda();
 
 #ifndef NDEBUG
         // if in debug mode, sync all the time to check for errors
-        muda::Debug::debug_sync_all(true);
+        cuda_tool::Debug::debug_sync_all(true);
 #endif
         logger::info("Cuda Backend Init Success.");
     }
@@ -67,10 +75,10 @@ SimEngine::SimEngine(EngineCreateInfo* info)
 
 SimEngine::~SimEngine()
 {
-    muda::wait_device();
+    cuda_tool::wait_device();
 
     // remove the sync callback
-    muda::Debug::set_sync_callback(nullptr);
+    cuda_tool::Debug::set_sync_callback(nullptr);
 
     logger::info("Cuda Backend Shutdown Success.");
 }
@@ -98,11 +106,69 @@ void SimEngine::event_write_scene()
         action();
 }
 
+void SimEngine::step_animation_and_external_forces()
+{
+    // External-force reporters accumulate into shared dynamics buffers. Clear
+    // the previous frame before user animation mutates force attributes, then
+    // consume the freshly animated values before predicting the next state.
+    if(m_global_external_force_manager)
+    {
+        Timer timer{"Clear External Forces"};
+        m_global_external_force_manager->clear();
+    }
+
+    if(m_global_animator)
+    {
+        Timer timer{"Step Animation"};
+        m_global_animator->step();
+    }
+
+    if(m_global_external_force_manager)
+    {
+        Timer timer{"Compute External Force Accelerations"};
+        m_global_external_force_manager->step();
+    }
+}
+
+void SimEngine::reset_frame_stats()
+{
+    m_frame_newton_iterations        = 0;
+    m_frame_line_search_trials       = 0;
+    m_frame_linear_solver_iterations = 0;
+    m_frame_completed                = false;
+    m_frame_converged                = false;
+    m_frame_hit_newton_limit         = false;
+    m_frame_hit_line_search_limit    = false;
+    m_frame_last_line_search_alpha   = 1.0;
+    m_frame_last_ccd_toi             = 1.0;
+    m_frame_last_cfl_alpha           = 1.0;
+}
+
+Json SimEngine::do_frame_stats() const
+{
+    Json stats              = Json::object();
+    stats["schema_version"] = 1;
+    stats["backend"]        = "cuda";
+    stats["frame"]          = m_current_frame;
+    stats["pipeline"] = m_pipeline_type == PipelineType::Basic ? "ipc" : "al-ipc";
+    stats["completed"]                = m_frame_completed;
+    stats["converged"]                = m_frame_converged;
+    stats["newton_iterations"]        = m_frame_newton_iterations;
+    stats["line_search_trials"]       = m_frame_line_search_trials;
+    stats["linear_solver_iterations"] = m_frame_linear_solver_iterations;
+    stats["hit_newton_limit"]         = m_frame_hit_newton_limit;
+    stats["hit_line_search_limit"]    = m_frame_hit_line_search_limit;
+    stats["last_line_search_alpha"]   = m_frame_last_line_search_alpha;
+    stats["last_ccd_toi"]             = m_frame_last_ccd_toi;
+    stats["last_cfl_alpha"]           = m_frame_last_cfl_alpha;
+    return stats;
+}
+
 void SimEngine::dump_global_surface()
 {
     BackendPathTool tool{workspace()};
-    auto            output_folder = tool.workspace(UIPC_RELATIVE_SOURCE_FILE, "debug");
-    auto            file_path = fmt::format("{}global_surface.{}.{}.{}.obj",
+    auto output_folder = tool.workspace(UIPC_RELATIVE_SOURCE_FILE, "debug");
+    auto file_path     = fmt::format("{}global_surface.{}.{}.{}.obj",
                                  output_folder.string(),
                                  frame(),
                                  newton_iter(),
@@ -143,11 +209,9 @@ void SimEngine::dump_global_surface()
 void SimEngine::dump_global_surface_pre_ccd(SizeT newton_iter)
 {
     BackendPathTool tool{workspace()};
-    auto            output_folder = tool.workspace(UIPC_RELATIVE_SOURCE_FILE, "debug");
-    auto            file_path = fmt::format("{}global_surface.pre_ccd.{}.{}.obj",
-                                 output_folder.string(),
-                                 frame(),
-                                 newton_iter);
+    auto output_folder = tool.workspace(UIPC_RELATIVE_SOURCE_FILE, "debug");
+    auto file_path     = fmt::format(
+        "{}global_surface.pre_ccd.{}.{}.obj", output_folder.string(), frame(), newton_iter);
 
     std::vector<Vector3>  global_positions;
     std::vector<Vector3>  global_displacements;

@@ -1,13 +1,58 @@
 #include <affine_body/abd_line_search_reporter.h>
 #include <affine_body/affine_body_constitution.h>
-#include <muda/cub/device/device_reduce.h>
+#include <cuda_tool/cub.h>
+#include <cuda_tool/cuda_tool.h>
 #include <kernel_cout.h>
-#include <muda/ext/eigen/log_proxy.h>
 #include <affine_body/abd_line_search_subreporter.h>
 #include <affine_body/affine_body_kinetic.h>
 
 namespace uipc::backend::cuda
 {
+namespace
+{
+    __global__ void abd_line_search_reporter_step_forward_kernel(
+        cuda_tool::CBufferView<IndexT>   is_fixed,
+        cuda_tool::CBufferView<Vector12> q_temps,
+        cuda_tool::BufferView<Vector12>  qs,
+        cuda_tool::CBufferView<Vector12> dqs,
+        Float                            alpha,
+        int                              n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(is_fixed(i))
+            return;
+        qs(i) = q_temps(i) + alpha * dqs(i);
+    }
+
+    __global__ void abd_line_search_reporter_compute_energy_kernel(
+        cuda_tool::CBufferView<IndexT> is_fixed,
+        cuda_tool::CBufferView<IndexT> external_kinetic,
+        cuda_tool::BufferView<Float>   kinetic_energy,
+        int                            n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(is_fixed(i) || external_kinetic(i))
+        {
+            kinetic_energy(i) = 0.0;
+        }
+    }
+
+    __global__ void abd_line_search_reporter_combine_energy_kernel(
+        cuda_tool::CVarView<Float> kinetic_energy,
+        cuda_tool::CVarView<Float> shape_energy,
+        cuda_tool::CVarView<Float> reporter_energy,
+        cuda_tool::VarView<Float>  total_energy)
+    {
+        if(blockIdx.x != 0 || threadIdx.x != 0)
+            return;
+        *total_energy = *kinetic_energy + *shape_energy + *reporter_energy;
+    }
+}  // namespace
+
 REGISTER_SIM_SYSTEM(ABDLineSearchReporter);
 
 void ABDLineSearchReporter::do_build(LineSearchReporter::BuildInfo& info)
@@ -28,7 +73,7 @@ void ABDLineSearchReporter::Impl::init(LineSearchReporter::InitInfo& info)
 
 void ABDLineSearchReporter::Impl::record_start_point(LineSearcher::RecordInfo& info)
 {
-    using namespace muda;
+    using namespace cuda_tool;
 
     BufferLaunch().template copy<Vector12>(abd().body_id_to_q_temp.view(),
                                            abd().body_id_to_q.view());
@@ -36,31 +81,29 @@ void ABDLineSearchReporter::Impl::record_start_point(LineSearcher::RecordInfo& i
 
 void ABDLineSearchReporter::Impl::step_forward(LineSearcher::StepInfo& info)
 {
-    using namespace muda;
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(abd().abd_body_count,
-               [is_fixed = abd().body_id_to_is_fixed.cviewer().name("is_fixed"),
-                q_temps  = abd().body_id_to_q_temp.cviewer().name("q_temps"),
-                qs       = abd().body_id_to_q.viewer().name("qs"),
-                dqs      = abd().body_id_to_dq.cviewer().name("dqs"),
-                alpha    = info.alpha] __device__(int i) mutable
-               {
-                   if(is_fixed(i))
-                       return;
-                   qs(i) = q_temps(i) + alpha * dqs(i);
-               });
+    int n = (int)abd().abd_body_count;
+    if(n > 0)
+    {
+        auto k = abd_line_search_reporter_step_forward_kernel;
+        k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+            abd().body_id_to_is_fixed.cview(),
+            abd().body_id_to_q_temp.cview(),
+            abd().body_id_to_q.view(),
+            abd().body_id_to_dq.cview(),
+            info.alpha,
+            n);
+    }
 }
 
 void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo& info)
 {
-    using namespace muda;
+    using namespace cuda_tool;
 
     auto body_count = abd().body_count();
 
     // Compute kinetic energy
     {
-        body_id_to_kinetic_energy.resize(body_count);
+        body_id_to_kinetic_energy.resize_discard(body_count);
 
         ABDLineSearchReporter::ComputeEnergyInfo this_info;
         this_info.m_energies = body_id_to_kinetic_energy.view();
@@ -68,23 +111,17 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
 
         abd().kinetic->compute_energy(this_info);
 
-        using namespace muda;
-
         // Zero out the kinetic energy of fixed bodies and bodies with external kinetic
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(abd().abd_body_count,
-                   [is_fixed = abd().body_id_to_is_fixed.cviewer().name("is_fixed"),
-                    external_kinetic =
-                        abd().body_id_to_external_kinetic.cviewer().name("external_kinetic"),
-                    kinetic_energy = body_id_to_kinetic_energy.viewer().name(
-                        "kinetic_energy")] __device__(int i) mutable
-                   {
-                       if(is_fixed(i) || external_kinetic(i))
-                       {
-                           kinetic_energy(i) = 0.0;
-                       }
-                   });
+        int n = (int)abd().abd_body_count;
+        if(n > 0)
+        {
+            auto k = abd_line_search_reporter_compute_energy_kernel;
+            k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+                abd().body_id_to_is_fixed.cview(),
+                abd().body_id_to_external_kinetic.cview(),
+                body_id_to_kinetic_energy.view(),
+                n);
+        }
 
         // Sum up the kinetic energy
         DeviceReduce().Sum(body_id_to_kinetic_energy.data(),
@@ -94,7 +131,7 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
 
     // Compute shape energy
     {
-        body_id_to_shape_energy.resize(body_count);
+        body_id_to_shape_energy.resize_discard(body_count);
 
         // Distribute the computation of shape energy to each constitution
         for(auto&& [i, cst] : enumerate(abd().constitutions.view()))
@@ -125,7 +162,7 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
         }
 
         reporter_energy_offsets_counts.scan();
-        reporter_energies.resize(reporter_energy_offsets_counts.total_count());
+        reporter_energies.resize_discard(reporter_energy_offsets_counts.total_count());
 
         for(auto&& [i, R] : enumerate(reporter_view))
         {
@@ -142,14 +179,11 @@ void ABDLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
                            reporter_energies.size());
     }
 
-    // Copy from device to host
-    Float K       = abd_kinetic_energy;
-    Float shape_E = abd_shape_energy;
-    Float other_E = total_reporter_energy;
-
-    Float E = K + shape_E + other_E;
-
-    info.energy(E);
+    abd_line_search_reporter_combine_energy_kernel<<<1, 1>>>(
+        abd_kinetic_energy.cview(),
+        abd_shape_energy.cview(),
+        total_reporter_energy.cview(),
+        info.energy());
 }
 
 void ABDLineSearchReporter::do_init(LineSearchReporter::InitInfo& info)

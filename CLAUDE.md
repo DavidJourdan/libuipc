@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Read `agent_docs/rule.md` before making changes, then use
+`agent_docs/README.md` as the maintained architecture index. Accepted design
+boundaries live in `agent_docs/adr/`, durable performance evidence in
+`agent_docs/performance/`, and chronological history in `agent_docs/handoff.md`.
+
 ## Project Overview
 
 LibUIPC is a cross-platform C++20 library implementing Unified Incremental Potential Contact for GPU-accelerated physics simulation. It simulates rigid bodies, soft bodies, cloth, and threads with penetration-free frictional contact. Both C++ and Python APIs are provided.
@@ -16,9 +21,9 @@ LibUIPC is a cross-platform C++20 library implementing Unified Incremental Poten
 
 ### Configure and Build
 ```bash
-# Using presets (recommended)
-cmake --preset release
-cmake --build --preset release -j8
+# Using presets (available presets: ci-release, ci-build-wheel)
+cmake --preset ci-release
+cmake --build --preset ci-release -j8
 
 # Or manually
 mkdir build && cd build
@@ -31,6 +36,7 @@ cmake --build . --config Release -j8
 - `UIPC_BUILD_TESTS` - Build test suite (ON by default)
 - `UIPC_BUILD_EXAMPLES` - Build examples (ON by default)
 - `UIPC_WITH_CUDA_BACKEND` - Enable CUDA backend (auto, disabled on macOS)
+- `UIPC_WITH_CUDA_LEGACY_COLLISION` - Build alternate legacy broad-phase filters (ON by default)
 
 ### Run Tests
 Tests are Catch2 executables built to `build/Release/bin/`:
@@ -61,9 +67,9 @@ The codebase uses Data-Oriented Programming with an ECS-inspired RMR pattern for
 - `src/constitution/` - Material models (AffineBody, NeoHookean, springs, constraints)
 - `src/backends/` - Backend implementations loaded as dynamic modules
   - `cuda/` - GPU backend with CUDA kernels
-  - `none/` - CPU reference implementation
+  - `none/` - Empty interface/template backend; handles pending scene mutations but performs no physics
 - `src/pybind/` - Python bindings via pybind11
-- `src/io/` - File I/O (obj, gltf, serialization)
+- `src/io/` - Mesh/scene IO (OBJ, MSH, STL, URDF and serialization); glTF code is experimental test code
 
 ### Key Classes
 - **SimplicialComplex** - Core geometry type (vertices, edges, triangles, tetrahedra)
@@ -71,7 +77,10 @@ The codebase uses Data-Oriented Programming with an ECS-inspired RMR pattern for
 - **Contact Model** - Pairwise contact parameters stored in tabular form
 
 ### Backend Architecture
-Backends are MODULE libraries dynamically loaded at runtime. They implement a visitor pattern for scene traversal and provide device-specific optimizations.
+Backends are shared libraries loaded dynamically at runtime. Core validates a
+versioned `uipc_query_module` handshake before entering their C++ interface.
+They implement a visitor pattern for scene traversal and provide device-specific
+optimizations.
 
 ## Testing Structure
 
@@ -83,6 +92,10 @@ Tests are organized under `apps/tests/`:
 - `sim_case/` - Full simulation scenarios
 
 Test executables are named `uipc_test_<name>` via the `uipc_add_test()` CMake function.
+Keep the 95-case `uipc.sim_case` single-process aggregate for global-state
+pollution coverage. Use `scripts/run_sim_case_isolated.py` for fresh-process
+manifests/shards and `scripts/run_benchmark.py` for registered performance
+scenes.
 
 ## Python API Structure
 

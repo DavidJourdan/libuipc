@@ -5,12 +5,12 @@
 #include <collision_detection/stackless_bvh.h>
 #include <uipc/geometry.h>
 #include <uipc/geometry/simplicial_complex.h>
-#include <muda/cub/device/device_scan.h>
-#include <muda/viewer/viewer_base.h>
+#include <cuda_tool/cuda_tool.h>
 #include <uipc/uipc.h>
 #include <uipc/common/timer.h>
 
-using namespace muda;
+namespace cuda_tool = uipc::backend::cuda_tool;
+using namespace cuda_tool;
 using namespace uipc;
 using namespace uipc::geometry;
 using namespace uipc::backend::cuda;
@@ -18,62 +18,14 @@ using namespace uipc::backend::cuda;
 namespace test_stackless_bvh
 {
 template <typename T>
-void compare(thrust::device_vector<T>& l, thrust::device_vector<T>& r)
-{
-    std::vector<T> hl(l.size());
-    std::vector<T> hr(r.size());
-    thrust::copy(l.begin(), l.end(), hl.begin());
-    thrust::copy(r.begin(), r.end(), hr.begin());
-    UIPC_ASSERT(hl.size() == hr.size(), "error");
-
-    bool error = false;
-    for(size_t i = 0; i < hl.size(); ++i)
-    {
-        if(hl[i] != hr[i])
-        {
-            error = true;
-            break;
-        }
-    }
-
-    if(error)
-    {
-        for(size_t i = 0; i < hl.size(); ++i)
-        {
-            if(hl[i] != hr[i])
-            {
-                fmt::println("mismatch at index {}: lhs={}, rhs={}", i, hl[i], hr[i]);
-            }
-        }
-    }
-
-    UIPC_ASSERT(!error, "error");
-}
-
-template <typename T1, typename T2, typename F>
-void compare(thrust::device_vector<T1>& l, thrust::device_vector<T2>& r, F&& f)
-{
-    std::vector<T1> hl(l.size());
-    std::vector<T2> hr(r.size());
-    thrust::copy(l.begin(), l.end(), hl.begin());
-    thrust::copy(r.begin(), r.end(), hr.begin());
-    REQUIRE(hl.size() == hr.size());
-
-    for(size_t i = 0; i < hl.size(); ++i)
-    {
-        UIPC_ASSERT(f(hl[i], hr[i]), "error");
-    }
-}
-
-template <typename T>
-void compare(muda::CBufferView<T> l, const T* r)
+void compare(cuda_tool::CBufferView<T> l, const T* r)
 {
     std::vector<T> hl;
     hl.resize(l.size());
     l.copy_to(hl.data());
 
-    muda::CBufferView<T> r_view(r, l.size());
-    std::vector<T>       hr;
+    cuda_tool::CBufferView<T> r_view(r, l.size());
+    std::vector<T>            hr;
     hr.resize(r_view.size());
     r_view.copy_to(hr.data());
 
@@ -167,12 +119,12 @@ std::vector<Vector2i> stackless_bvh_cp(span<const AABB> aabbs)
     qbuffer.reserve(1024);
     {
         Timer timer("unlucky detect cp");
-        bvh.detect([] __device__(int i, int j) { return true; }, qbuffer);
+        bvh.detect(StacklessBVH::DefaultQueryCallback{}, qbuffer);
     }
 
     {
         Timer timer("lucky detect cp");
-        bvh.detect([] __device__(int i, int j) { return true; }, qbuffer);
+        bvh.detect(StacklessBVH::DefaultQueryCallback{}, qbuffer);
     }
 
     cps.resize(qbuffer.size());
@@ -215,12 +167,12 @@ std::vector<Vector2i> stackless_bvh_query_cp(span<const AABB> aabbs)
     StacklessBVH::QueryBuffer qbuffer;
     {
         Timer timer("unlucky query cp");
-        bvh.query(d_aabbs, [] __device__(int i, int j) { return true; }, qbuffer);
+        bvh.query(d_aabbs, StacklessBVH::DefaultQueryCallback{}, qbuffer);
     }
 
     {
         Timer timer("lucky query cp");
-        bvh.query(d_aabbs, [] __device__(int i, int j) { return true; }, qbuffer);
+        bvh.query(d_aabbs, StacklessBVH::DefaultQueryCallback{}, qbuffer);
     }
 
     cps.resize(qbuffer.size());
@@ -232,7 +184,7 @@ std::vector<Vector2i> stackless_bvh_query_cp(span<const AABB> aabbs)
 void stackless_bvh_test(const SimplicialComplex& mesh)
 {
     Timer::enable_all();
-    Timer::set_sync_func([]() { muda::wait_device(); });
+    Timer::set_sync_func([]() { cuda_tool::wait_device(); });
 
     std::cout << "num_aabb=" << mesh.triangles().size() << std::endl;
 
@@ -323,4 +275,3 @@ TEST_CASE("stackless_bvh", "[collision detection]")
         stackless_bvh_test(mesh);
     }
 }
-

@@ -31,6 +31,20 @@ static py::list list_of_sc(const vector<SimplicialComplex>& simplicial_complexes
 
 PyUtils::PyUtils(py::module& m)
 {
+    m.def("tetrahedralization_default_config",
+          &tetrahedralization_default_config,
+          R"(Return native tetrahedralization options. Strict surface preservation is enabled by default.)");
+    m.def("tetrahedralize",
+          &tetrahedralize,
+          py::arg("surface"),
+          py::arg("config") = tetrahedralization_default_config(),
+          py::call_guard<py::gil_scoped_release>(),
+          R"(Build a tetrahedral solid and return (mesh, report).
+preserve_surface=True locks the original vertex coordinates/indices and every
+boundary triangle. Interior Steiner points are permitted. A conservative
+boundary-conforming mesh is built before quality optimization. Input must be a
+closed, embedded, consistently oriented triangle surface. Instance transforms
+are not applied. Quality budgets never turn off conservative construction.)");
     m.def("label_surface",
           &label_surface,
           py::arg("sc"),
@@ -225,20 +239,6 @@ Args:
     resolution: Point sampling resolution (default: 0.01).
 Returns:
     SimplicialComplex: Point cloud.)");
-
-    m.def("mesh_partition",
-          &mesh_partition,
-          py::arg("sc"),
-          py::arg("part_max_size") = 16,
-          R"(Partition the simplicial complex using METIS graph partitioning.
-
-Creates a 'mesh_part' vertex attribute on the simplicial complex.
-This must be called before world.init() to enable the MAS preconditioner.
-
-Args:
-    sc: SimplicialComplex to partition.
-    part_max_size: Maximum number of vertices per partition (default: 16).
-)");
 
     m.def("closest_vertex_triangle_pairs",
           &closest_vertex_triangle_pairs,

@@ -55,6 +55,9 @@ int main(int argc, char* argv[])
         config["gravity"] = Vector3{0, 0, 0};
 
     config["contact"]["d_hat"] = data.at("d_hat").get<double>();
+    if(data.contains("kappa_eval_scale"))
+        config["contact"]["adaptive"]["kappa_eval_scale"] =
+            data.at("kappa_eval_scale").get<double>();
 
     Scene scene{config};
 

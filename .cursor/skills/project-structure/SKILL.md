@@ -13,10 +13,10 @@ Overview of the main directories and important files in the repository.
 - `assets/` - Scene assets and simulation data.
 - `cmake/` - Shared CMake utilities and macros.
 - `docs/` - Documentation, specs, and site assets.
-- `external/` - Third-party dependencies (e.g., `external/muda/`).
 - `include/` - Public C++ headers.
 - `output/` - Generated outputs from simulations. (the contents is ignored by git)
 - `python/` - Python package, tests, and metadata.
+- `libuipc-samples/` - Tracked git submodule containing Python examples, benchmarks, and sample assets.
 - `scripts/` - Utility scripts and notebooks.
 - `src/` - Core C++ implementation.
 - `xmake/` - XMake rules and build helpers.
@@ -47,14 +47,9 @@ Overview of the main directories and important files in the repository.
 - `media/` - Images for docs pages.
 - `misc/` - Miscellaneous documentation.
 
-### `external/`
-
-- `muda/` - Third-party CUDA/math dependency (source + docs + tests).
-
 ### `include/`
 
-- `uipc/` - Public headers grouped by module (backend, core, geometry, io, etc.).
-- `uipc_gui/` - Public GUI-related headers. (now not supported)
+- `uipc/` - Public headers grouped by module (backend, core, geometry, io, etc.). The removed C++ GUI has no public header tree.
 
 ### `python/`
 
@@ -73,12 +68,20 @@ Overview of the main directories and important files in the repository.
   - `common/` - Common utilities for all backends.
   - `cuda/` - CUDA backend with CUDA kernels.
   - `none/` - An empty backend that does nothing, as a template for creating a new backend or checking the basic functionality.
+- `geometry/metis/` - Private C++ METIS implementation and required
+  GKlib-derived support code, built as `uipc_metis` for mesh partitioning.
 - `constitution/` - Physical constitution implementations.
 - `core/` - Core engine systems and modules.
 - `geometry/` - Geometry algorithms and data types.
-- `gui/` - GUI runtime components. (now not supported)
 - `io/` - Serialization and I/O.
 - `pybind/` - C++/Python bindings.
 - `sanity_check/` - Internal scene sanity checks to ensure the correctness of scene before the simulation.
 - `usd/` - USD integration.
 - `vdb/` - VDB integration.
+
+The supported visualization frontend is the pure-Python polyscope layer at
+`python/src/uipc/gui.py`. CMake is the primary and wheel-tested build. XMake mirrors the active optional
+USD/VDB targets, disables ccache, and synchronizes pybind staging before
+packaging. Remaining dependency-version differences are documented in
+[the build guide](../../../agent_docs/07-build-test-workflow.md) and
+[the secondary-module guide](../../../agent_docs/12-secondary-modules-samples-and-docs.md).

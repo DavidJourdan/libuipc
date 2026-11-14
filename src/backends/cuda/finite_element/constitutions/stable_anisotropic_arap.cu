@@ -1,12 +1,110 @@
 #include <finite_element/fem_3d_extra_constitution.h>
 #include <finite_element/constitutions/stable_anisotropic_arap_function.h>
 #include <finite_element/fem_utils.h>
+#include <cuda_tool/cuda_tool.h>
 #include <Eigen/Dense>
 #include <utils/make_spd.h>
 #include <utils/matrix_assembler.h>
 
 namespace uipc::backend::cuda
 {
+
+
+namespace
+{
+    constexpr SizeT StencilSize     = 4;
+    constexpr SizeT HalfHessianSize = StencilSize * (StencilSize + 1) / 2;
+
+    namespace SAA = sym::stable_anisotropic_arap;
+
+    __global__ void StableAnisotropicARAP_do_compute_energy_kernel(
+        cuda_tool::CBufferView<Float>     mus,
+        cuda_tool::CBufferView<Vector3>   directions,
+        cuda_tool::BufferView<Float>      energies,
+        cuda_tool::CBufferView<Vector4i>  indices,
+        cuda_tool::CBufferView<Vector3>   xs,
+        cuda_tool::CBufferView<Matrix3x3> Dm_invs,
+        cuda_tool::CBufferView<Float>     volumes,
+        Float                             dt,
+        int                               n)
+    {
+        int I = blockIdx.x * blockDim.x + threadIdx.x;
+        if(I >= n)
+            return;
+        const Vector4i&  tet                = indices(I);
+        const Matrix3x3& Dm_inv             = Dm_invs(I);
+        Float            anisotropy_modulus = mus(I);
+        Vector3          direction          = directions(I);
+
+        const Vector3& x0 = xs(tet(0));
+        const Vector3& x1 = xs(tet(1));
+        const Vector3& x2 = xs(tet(2));
+        const Vector3& x3 = xs(tet(3));
+
+        auto F = fem::F(x0, x1, x2, x3, Dm_inv);
+
+        Float E;
+
+        SAA::E(E, anisotropy_modulus, direction, F);
+        E *= dt * dt * volumes(I);
+        energies(I) = E;
+    }
+
+    __global__ void StableAnisotropicARAP_do_compute_gradient_hessian_kernel(
+        cuda_tool::CBufferView<Float>           mus,
+        cuda_tool::CBufferView<Vector3>         directions,
+        cuda_tool::CBufferView<Vector4i>        indices,
+        cuda_tool::CBufferView<Vector3>         xs,
+        cuda_tool::CBufferView<Matrix3x3>       Dm_invs,
+        cuda_tool::DoubletVectorView<Float, 3>  G3s,
+        cuda_tool::TripletMatrixView<Float, 3>   H3x3s,
+        cuda_tool::CBufferView<Float>            volumes,
+        Float                                    dt,
+        bool                                     gradient_only,
+        int                                      n)
+    {
+        int I = blockIdx.x * blockDim.x + threadIdx.x;
+        if(I >= n)
+            return;
+        const Vector4i&  tet                = indices(I);
+        const Matrix3x3& Dm_inv             = Dm_invs(I);
+        Float            anisotropy_modulus = mus(I);
+        Vector3          direction          = directions(I);
+
+        const Vector3& x0 = xs(tet(0));
+        const Vector3& x1 = xs(tet(1));
+        const Vector3& x2 = xs(tet(2));
+        const Vector3& x3 = xs(tet(3));
+
+        auto F = fem::F(x0, x1, x2, x3, Dm_inv);
+
+        auto Vdt2 = volumes(I) * dt * dt;
+
+        Matrix3x3 dEdF;
+        SAA::dEdVecF(dEdF, anisotropy_modulus, direction, F);
+        auto VecdEdF = flatten(dEdF);
+        VecdEdF *= Vdt2;
+
+        Matrix9x12 dFdx = fem::dFdx(Dm_inv);
+        Vector12   G    = dFdx.transpose() * VecdEdF;
+
+        DoubletVectorAssembler DVA{G3s};
+        DVA.segment<StencilSize>(I * StencilSize).write(tet, G);
+
+        if(gradient_only)
+            return;
+
+        Matrix9x9 ddEddF;
+        SAA::ddEddVecF(ddEddF, anisotropy_modulus, direction, F);
+        ddEddF *= Vdt2;
+        make_spd(ddEddF);
+        Matrix12x12            H = dFdx.transpose() * ddEddF * dFdx;
+        TripletMatrixAssembler TMA{H3x3s};
+        TMA.half_block<StencilSize>(I * HalfHessianSize).write(tet, H);
+    }
+}  // namespace
+
+
 class StableAnisotropicARAP final : public FEM3DExtraConstitution
 {
   public:
@@ -20,8 +118,8 @@ class StableAnisotropicARAP final : public FEM3DExtraConstitution
     vector<Float>   h_mus;
     vector<Vector3> h_directions;
 
-    muda::DeviceBuffer<Float>   mus;
-    muda::DeviceBuffer<Vector3> directions;
+    cuda_tool::DeviceBuffer<Float>   mus;
+    cuda_tool::DeviceBuffer<Vector3> directions;
 
     virtual U64 get_uid() const noexcept override { return ConstitutionUID; }
 
@@ -76,99 +174,45 @@ class StableAnisotropicARAP final : public FEM3DExtraConstitution
         directions.view().copy_from(h_directions.data());
     }
 
+
     virtual void do_compute_energy(ComputeEnergyInfo& info) override
     {
-        using namespace muda;
-        namespace SAA = sym::stable_anisotropic_arap;
-
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(info.indices().size(),
-                   [mus        = mus.cviewer().name("mus"),
-                    directions = directions.cviewer().name("directions"),
-                    energies   = info.energies().viewer().name("energies"),
-                    indices    = info.indices().viewer().name("indices"),
-                    xs         = info.xs().viewer().name("xs"),
-                    Dm_invs    = info.Dm_invs().viewer().name("Dm_invs"),
-                    volumes    = info.rest_volumes().viewer().name("volumes"),
-                    dt         = info.dt()] __device__(int I)
-                   {
-                       const Vector4i&  tet                = indices(I);
-                       const Matrix3x3& Dm_inv             = Dm_invs(I);
-                       Float            anisotropy_modulus = mus(I);
-                       Vector3          direction          = directions(I);
-
-                       const Vector3& x0 = xs(tet(0));
-                       const Vector3& x1 = xs(tet(1));
-                       const Vector3& x2 = xs(tet(2));
-                       const Vector3& x3 = xs(tet(3));
-
-                       auto F = fem::F(x0, x1, x2, x3, Dm_inv);
-
-                       Float E;
-
-                       SAA::E(E, anisotropy_modulus, direction, F);
-                       E *= dt * dt * volumes(I);
-                       energies(I) = E;
-                   });
+        auto k = StableAnisotropicARAP_do_compute_energy_kernel;
+        int  n = (int)info.indices().size();
+        if(n > 0)
+        {
+            k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+                mus.cview(),
+                directions.cview(),
+                info.energies(),
+                info.indices(),
+                info.xs(),
+                info.Dm_invs(),
+                info.rest_volumes(),
+                info.dt(),
+                n);
+        }
     }
 
     virtual void do_compute_gradient_hessian(ComputeGradientHessianInfo& info) override
     {
-        using namespace muda;
-        namespace SAA      = sym::stable_anisotropic_arap;
-        auto gradient_only = info.gradient_only();
-
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(info.indices().size(),
-                   [mus        = mus.cviewer().name("mus"),
-                    directions = directions.cviewer().name("directions"),
-                    indices    = info.indices().viewer().name("indices"),
-                    xs         = info.xs().viewer().name("xs"),
-                    Dm_invs    = info.Dm_invs().viewer().name("Dm_invs"),
-                    G3s        = info.gradients().viewer().name("gradients"),
-                    H3x3s      = info.hessians().viewer().name("hessians"),
-                    volumes    = info.rest_volumes().viewer().name("volumes"),
-                    dt         = info.dt(),
-                    gradient_only] __device__(int I) mutable
-                   {
-                       const Vector4i&  tet                = indices(I);
-                       const Matrix3x3& Dm_inv             = Dm_invs(I);
-                       Float            anisotropy_modulus = mus(I);
-                       Vector3          direction          = directions(I);
-
-                       const Vector3& x0 = xs(tet(0));
-                       const Vector3& x1 = xs(tet(1));
-                       const Vector3& x2 = xs(tet(2));
-                       const Vector3& x3 = xs(tet(3));
-
-                       auto F = fem::F(x0, x1, x2, x3, Dm_inv);
-
-                       auto Vdt2 = volumes(I) * dt * dt;
-
-                       Matrix3x3 dEdF;
-                       SAA::dEdVecF(dEdF, anisotropy_modulus, direction, F);
-                       auto VecdEdF = flatten(dEdF);
-                       VecdEdF *= Vdt2;
-
-                       Matrix9x12 dFdx = fem::dFdx(Dm_inv);
-                       Vector12   G    = dFdx.transpose() * VecdEdF;
-
-                       DoubletVectorAssembler DVA{G3s};
-                       DVA.segment<StencilSize>(I * StencilSize).write(tet, G);
-
-                       if(gradient_only)
-                           return;
-
-                       Matrix9x9 ddEddF;
-                       SAA::ddEddVecF(ddEddF, anisotropy_modulus, direction, F);
-                       ddEddF *= Vdt2;
-                       make_spd(ddEddF);
-                       Matrix12x12 H = dFdx.transpose() * ddEddF * dFdx;
-                       TripletMatrixAssembler TMA{H3x3s};
-                       TMA.half_block<StencilSize>(I * HalfHessianSize).write(tet, H);
-                   });
+        auto k = StableAnisotropicARAP_do_compute_gradient_hessian_kernel;
+        int  n = (int)info.indices().size();
+        if(n > 0)
+        {
+            k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+                mus.cview(),
+                directions.cview(),
+                info.indices(),
+                info.xs(),
+                info.Dm_invs(),
+                info.gradients(),
+                info.hessians(),
+                info.rest_volumes(),
+                info.dt(),
+                info.gradient_only(),
+                n);
+        }
     }
 };
 

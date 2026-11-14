@@ -8,87 +8,99 @@
 #include <finite_element/mas_preconditioner_engine.h>
 #include <uipc/builtin/attribute_name.h>
 #include <uipc/geometry/simplicial_complex.h>
+#include <uipc/geometry/utils/mesh_partition.h>
 #include <uipc/common/log.h>
 #include <backends/common/backend_path_tool.h>
 #include <sim_engine.h>
 #include <set>
+#include <memory>
 
 namespace uipc::backend::cuda
 {
+namespace
+{
+    namespace eigen = cuda_tool::eigen;
+
+    __global__ void assemble_diag_inv_for_unpartitioned_kernel(
+        cuda_tool::CBCOOMatrixView<Float, 3> triplet,
+        cuda_tool::BufferView<Matrix3x3>     diag,
+        cuda_tool::CBufferView<int>          unpart,
+        int                                  fem_offset,
+        int                                  fem_count,
+        int                                  n)
+    {
+        int I = blockIdx.x * blockDim.x + threadIdx.x;
+        if(I >= n)
+            return;
+        auto&& [g_i, g_j, H3x3] = triplet(I);
+
+        int i = g_i - fem_offset;
+        int j = g_j - fem_offset;
+
+        if(i < 0 || i >= fem_count || j < 0 || j >= fem_count)
+            return;
+
+        if(i == j && unpart(i) == 1)
+            diag(i) = eigen::inverse(H3x3);
+    }
+
+    __global__ void apply_diag_inv_for_unpartitioned_kernel(
+        cuda_tool::CDenseVectorView<Float> r_view,
+        cuda_tool::DenseVectorView<Float>  z_view,
+        cuda_tool::CBufferView<Matrix3x3>  diag,
+        cuda_tool::CBufferView<int>        unpart,
+        cuda_tool::CDense<IndexT>          converged,
+        int                                n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(*converged != 0)
+            return;
+        if(unpart(i) == 1)
+        {
+            z_view.segment<3>(i * 3).as_eigen() =
+                diag(i) * r_view.segment<3>(i * 3).as_eigen();
+        }
+    }
+}  // namespace
+
 // Must match REGISTER_CONSTITUTION_UIDS EmptyUID in src/constitution/empty.cpp
 constexpr ::uipc::U64 kEmptyConstitutionUID = 0ull;
-// Free function: NVCC on Windows forbids __device__ lambdas in static / internal-linkage functions
-void fill_identity_indices(muda::DeviceBuffer<uint32_t>& buf, int count)
-{
-    using namespace muda;
-    buf.resize(count);
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(count,
-               [indices = buf.viewer().name("indices")] __device__(int i) mutable
-               { indices(i) = static_cast<uint32_t>(i); });
-}
-
-void assemble_diag_inv_for_unpartitioned(muda::DeviceBuffer<Matrix3x3>& diag_inv,
-                                         const muda::DeviceBuffer<int>& unpart_flags,
-                                         muda::CBCOOMatrixView<Float, 3> A,
+void assemble_diag_inv_for_unpartitioned(cuda_tool::DeviceBuffer<Matrix3x3>& diag_inv,
+                                         const cuda_tool::DeviceBuffer<int>& unpart_flags,
+                                         cuda_tool::CBCOOMatrixView<Float, 3> A,
                                          int   fem_block_offset,
                                          int   fem_block_count,
                                          SizeT num_verts)
 {
-    using namespace muda;
-
     diag_inv.resize(num_verts);
     diag_inv.fill(Matrix3x3::Identity());
 
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(A.triplet_count(),
-               [triplet    = A.cviewer().name("triplet"),
-                diag       = diag_inv.viewer().name("diag_inv"),
-                unpart     = unpart_flags.cviewer().name("unpart_flags"),
-                fem_offset = fem_block_offset,
-                fem_count  = fem_block_count] __device__(int I) mutable
-               {
-                   auto&& [g_i, g_j, H3x3] = triplet(I);
-
-                   int i = g_i - fem_offset;
-                   int j = g_j - fem_offset;
-
-                   if(i < 0 || i >= fem_count || j < 0 || j >= fem_count)
-                       return;
-
-                   if(i == j && unpart(i) == 1)
-                       diag(i) = eigen::inverse(H3x3);
-               });
+    int n = A.triplet_count();
+    if(n > 0)
+    {
+        auto k = assemble_diag_inv_for_unpartitioned_kernel;
+        k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+            A, diag_inv.view(), unpart_flags.cview(), fem_block_offset, fem_block_count, n);
+    }
 }
 
-void apply_diag_inv_for_unpartitioned(const muda::DeviceBuffer<Matrix3x3>& diag_inv,
-                                      const muda::DeviceBuffer<int>& unpart_flags,
-                                      muda::DenseVectorView<Float>  z,
-                                      muda::CDenseVectorView<Float> r,
-                                      muda::CVarView<IndexT>        converged,
-                                      SizeT                         num_verts)
+void apply_diag_inv_for_unpartitioned(const cuda_tool::DeviceBuffer<Matrix3x3>& diag_inv,
+                                      const cuda_tool::DeviceBuffer<int>& unpart_flags,
+                                      cuda_tool::DenseVectorView<Float>  z,
+                                      cuda_tool::CDenseVectorView<Float> r,
+                                      cuda_tool::CVarView<IndexT> converged,
+                                      SizeT                       num_verts,
+                                      cudaStream_t                stream)
 {
-    using namespace muda;
-
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(num_verts,
-               [r_view = r.viewer().name("r"),
-                z_view = z.viewer().name("z"),
-                diag   = diag_inv.cviewer().name("diag_inv"),
-                unpart = unpart_flags.cviewer().name("unpart_flags"),
-                converged = converged.cviewer().name("converged")] __device__(int i) mutable
-               {
-                   if(*converged != 0)
-                       return;
-                   if(unpart(i) == 1)
-                   {
-                       z_view.segment<3>(i * 3).as_eigen() =
-                           diag(i) * r_view.segment<3>(i * 3).as_eigen();
-                   }
-               });
+    int n = (int)num_verts;
+    if(n > 0)
+    {
+        auto k = apply_diag_inv_for_unpartitioned_kernel;
+        k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, stream>>>(
+            r, z, diag_inv.cview(), unpart_flags.cview(), converged.cviewer(), n);
+    }
 }
 
 /**
@@ -98,11 +110,13 @@ void apply_diag_inv_for_unpartitioned(const muda::DeviceBuffer<Matrix3x3>& diag_
  * simpler diagonal (Jacobi) preconditioner for much better convergence
  * on stiff problems. Based on the StiffGIPC paper.
  *
- * Prerequisites:
- *   The user must call `mesh_partition(sc, 16)` on their SimplicialComplex
- *   BEFORE `world.init()` to create a "mesh_part" vertex attribute.
- *   If this attribute is absent, the system will not be built and the
- *   default FEMDiagPreconditioner will be used instead.
+ * Activation:
+ *   Set scene config `linear_system/fem_preconditioner = "mas"`. MAS is
+ *   all-or-nothing: every non-Empty FEM SimplicialComplex is partitioned
+ *   internally (fixed cluster size = BANKSIZE 16) in do_init; a
+ *   pre-existing `mesh_part` vertex attribute (custom C++ partitioning)
+ *   is respected as-is. Partial manual tagging alone does NOT activate
+ *   MAS (measured net-negative — see agent_docs/09 coverage rule).
  */
 class FEMMASPreconditioner : public LocalPreconditioner
 {
@@ -116,14 +130,13 @@ class FEMMASPreconditioner : public LocalPreconditioner
     GlobalLinearSystem*  global_linear_system  = nullptr;
     FEMLinearSubsystem*  fem_linear_subsystem  = nullptr;
 
-    MASPreconditionerEngine      engine;
-    bool                         m_has_partition     = false;
-    bool                         m_has_unpartitioned = false;
-    muda::DeviceBuffer<uint32_t> sorted_indices;
+    MASPreconditionerEngine engine;
+    bool                    m_has_partition     = false;
+    bool                    m_has_unpartitioned = false;
 
     // Diagonal fallback for unpartitioned vertices
-    muda::DeviceBuffer<Matrix3x3> diag_inv;
-    muda::DeviceBuffer<int> unpartitioned_flags;  // 1 = unpartitioned, 0 = partitioned
+    cuda_tool::DeviceBuffer<Matrix3x3> diag_inv;
+    cuda_tool::DeviceBuffer<int> unpartitioned_flags;  // 1 = unpartitioned, 0 = partitioned
 
     virtual void do_build(BuildInfo& info) override
     {
@@ -132,28 +145,10 @@ class FEMMASPreconditioner : public LocalPreconditioner
         fem_linear_subsystem        = &require<FEMLinearSubsystem>();
         auto& global_vertex_manager = require<GlobalVertexManager>();
 
-        // MAS activates if ANY FEM geometry has mesh_part attribute.
-        // Unpartitioned meshes get diagonal (block-Jacobi) fallback internally.
-        auto geo_slots      = world().scene().geometries();
-        bool found_any_part = false;
-        for(SizeT i = 0; i < geo_slots.size(); i++)
+        auto precond = world().scene().config().find<std::string>("linear_system/fem_preconditioner");
+        if(!precond || precond->view()[0] != "mas")
         {
-            auto& geo = geo_slots[i]->geometry();
-            auto* sc  = geo.as<geometry::SimplicialComplex>();
-            if(sc && sc->dim() >= 1)
-            {
-                auto mesh_part = sc->vertices().find<IndexT>("mesh_part");
-                if(mesh_part)
-                {
-                    found_any_part = true;
-                    break;
-                }
-            }
-        }
-
-        if(!found_any_part)
-        {
-            throw SimSystemException("FEMMASPreconditioner: No 'mesh_part' attribute found on any geometry.");
+            throw SimSystemException("FEMMASPreconditioner: linear_system/fem_preconditioner != \"mas\", disabled.");
         }
 
         info.connect(fem_linear_subsystem);
@@ -208,7 +203,13 @@ class FEMMASPreconditioner : public LocalPreconditioner
                 h_neighbor_list.push_back(n);
         }
 
-        // ---- 3. Read mesh_part attribute and build partition mappings ----
+        // ---- 3. Partition every FEM geometry and build partition mappings ----
+        //
+        // MAS is all-or-nothing: every non-Empty FEM SimplicialComplex is
+        // covered. A pre-existing mesh_part attribute (custom C++
+        // partitioning) is respected as-is; everything else is partitioned
+        // internally on a private clone with the fixed cluster size
+        // (BANKSIZE), so the user's scene geometry is never mutated.
 
         std::vector<IndexT> part_ids(vert_num, -1);
         bool                has_parts = false;
@@ -224,20 +225,35 @@ class FEMMASPreconditioner : public LocalPreconditioner
             auto& geo_slot = geo_slots[geo_info.geo_slot_index];
             auto& geo      = geo_slot->geometry();
             auto* sc       = geo.as<geometry::SimplicialComplex>();
-            if(!sc)
+            if(!sc || sc->dim() < 1 || geo_info.vertex_count == 0)
                 continue;
 
-            auto mesh_part = sc->vertices().find<IndexT>("mesh_part");
-            if(!mesh_part)
+            // Empty constitution (no material): skip, stays on the
+            // diagonal fallback
+            auto cuid = geo.meta().find<U64>(builtin::constitution_uid);
+            if(!cuid || cuid->view()[0] == kEmptyConstitutionUID)
                 continue;
 
-            has_parts      = true;
-            auto part_view = mesh_part->view();
+            std::vector<IndexT> local_parts;
+            if(auto mesh_part = sc->vertices().find<IndexT>("mesh_part"))
+            {
+                auto pv = mesh_part->view();
+                local_parts.assign(pv.begin(), pv.end());
+            }
+            else
+            {
+                auto tmp_geo = std::static_pointer_cast<geometry::Geometry>(geo.clone());
+                auto* tmp_sc = tmp_geo->as<geometry::SimplicialComplex>();
+                geometry::mesh_partition(*tmp_sc, BANKSIZE);
+                auto pv = tmp_sc->vertices().find<IndexT>("mesh_part")->view();
+                local_parts.assign(pv.begin(), pv.end());
+            }
 
+            has_parts        = true;
             IndexT local_max = 0;
             for(SizeT v = 0; v < geo_info.vertex_count; v++)
             {
-                IndexT local_pid = part_view[v];
+                IndexT local_pid = local_parts[v];
                 part_ids[geo_info.vertex_offset + v] = local_pid + partition_offset;
                 local_max = std::max(local_max, local_pid);
             }
@@ -392,21 +408,11 @@ class FEMMASPreconditioner : public LocalPreconditioner
         if(!m_has_partition || !engine.is_initialized())
             return;
 
-        using namespace muda;
-
         auto A          = info.A();
         int  dof_offset = static_cast<int>(info.dof_offset());
 
-        auto triplet_count = A.triplet_count();
-
         // MAS assembly for partitioned vertices
-        fill_identity_indices(sorted_indices, triplet_count);
-        engine.set_preconditioner(A.values(),
-                                  A.row_indices(),
-                                  A.col_indices(),
-                                  sorted_indices.view(),
-                                  dof_offset / 3,
-                                  0);
+        engine.set_preconditioner(A.values(), A.row_indices(), A.col_indices(), dof_offset / 3);
 
         auto dump_mas = world().scene().config().find<IndexT>("extras/debug/dump_mas_matrices");
         if(dump_mas && dump_mas->view()[0] != 0)
@@ -415,8 +421,9 @@ class FEMMASPreconditioner : public LocalPreconditioner
                 static_cast<SimEngine&>(uipc::backend::SimSystem::engine());
             backend::BackendPathTool path_tool{std::string{workspace()}};
             auto out_dir = path_tool.workspace(UIPC_RELATIVE_SOURCE_FILE, "debug");
-            this->engine.dump_cluster_matrices_debug(
-                out_dir.string(), cuda_engine.frame(), cuda_engine.newton_iter());
+            this->engine.dump_cluster_matrices_debug(out_dir.string(),
+                                                     cuda_engine.frame(),
+                                                     cuda_engine.newton_iter());
         }
 
         // Diagonal fallback assembly for unpartitioned vertices
@@ -434,13 +441,19 @@ class FEMMASPreconditioner : public LocalPreconditioner
     virtual void do_apply(GlobalLinearSystem::ApplyPreconditionerInfo& info) override
     {
         if(!m_has_partition || !engine.is_initialized())
+        {
+            // switch enabled but nothing partitionable (e.g. all FEM
+            // geometries are Empty constitution): identity fallback so
+            // this subsystem's z is never left stale
+            cuda_tool::BufferLaunch(info.stream())
+                .copy(info.z().buffer_view(), info.r().buffer_view());
             return;
+        }
 
-        using namespace muda;
         auto converged = info.converged();
 
         // MAS for partitioned vertices
-        engine.apply(info.r(), info.z(), converged);
+        engine.apply(info.r(), info.z(), converged, info.stream());
 
         // Diagonal fallback for unpartitioned vertices
         if(m_has_unpartitioned)
@@ -450,7 +463,8 @@ class FEMMASPreconditioner : public LocalPreconditioner
                                              info.z(),
                                              info.r(),
                                              converged,
-                                             diag_inv.size());
+                                             diag_inv.size(),
+                                             info.stream());
         }
     }
 };

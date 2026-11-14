@@ -69,6 +69,7 @@ void GlobalLinearSystem::_dump_x()
 
 void GlobalLinearSystem::solve()
 {
+    m_impl.last_solve_iterations = 0;
     m_impl.build_linear_system();
 
     if(m_impl.empty_system) [[unlikely]]
@@ -222,12 +223,24 @@ void GlobalLinearSystem::Impl::build_linear_system()
         return;
     }
 
-    _assemble_linear_system();
+    {
+        Timer t{"Assemble Subsystems"};
+        _assemble_linear_system();
+    }
 
-    converter.ge2sym(triplet_A);
-    converter.convert(triplet_A, bcoo_A);
+    {
+        Timer t{"Convert To BCOO"};
+        converter.ge2sym(triplet_A);
+        converter.convert(triplet_A, bcoo_A);
+        // upload the nnz count for graph-stable SpMV launches (async on the
+        // default stream; drained before any solve reads it)
+        triplet_count_dev = (IndexT)bcoo_A.triplet_count();
+    }
 
-    _assemble_preconditioner();
+    {
+        Timer t{"Assemble Preconditioner"};
+        _assemble_preconditioner();
+    }
 
     logger::info("GlobalLinearSystem has {} DoFs, Unique Triplet Count: {}",
                  b.size(),
@@ -307,10 +320,10 @@ bool GlobalLinearSystem::Impl::_update_subsystem_extent()
     if(triplet_A.triplet_capacity() < total_triplet)
     {
         auto reserve_count = total_triplet * reserve_ratio;
-        triplet_A.reserve_triplets(reserve_count);
-        bcoo_A.reserve_triplets(reserve_count);
+        triplet_A.reserve_triplets_discard(reserve_count);
+        bcoo_A.reserve_triplets_discard(reserve_count);
     }
-    triplet_A.resize_triplets(total_triplet);
+    triplet_A.resize_triplets_discard(total_triplet);
 
     if(total_dof == 0 || total_triplet == 0) [[unlikely]]
     {
@@ -360,7 +373,7 @@ void GlobalLinearSystem::Impl::_assemble_linear_system()
 
             info.m_index     = triplet_i;
             info.m_gradients = B.subview(dof_offset, dof_count);
-            info.m_hessians = HA.subview(subsystem_triplet_offsets[triplet_i],
+            info.m_hessians  = HA.subview(subsystem_triplet_offsets[triplet_i],
                                          subsystem_triplet_counts[triplet_i])
                                   .submatrix(ij_offset, ij_count);
 
@@ -430,6 +443,7 @@ void GlobalLinearSystem::Impl::solve_linear_system()
         info.m_b = b.cview();
         info.m_x = x.view();
         iterative_solver->solve(info);
+        last_solve_iterations = info.m_iter_count;
         logger::info("Iterative linear solver iteration count: {}", info.m_iter_count);
     }
 }
@@ -449,9 +463,10 @@ void GlobalLinearSystem::Impl::distribute_solution()
     }
 }
 
-void GlobalLinearSystem::Impl::apply_preconditioner(muda::DenseVectorView<Float>  z,
-                                                    muda::CDenseVectorView<Float> r,
-                                                    muda::CVarView<IndexT>        converged)
+void GlobalLinearSystem::Impl::apply_preconditioner(cuda_tool::DenseVectorView<Float> z,
+                                                    cuda_tool::CDenseVectorView<Float> r,
+                                                    cuda_tool::CVarView<IndexT> converged,
+                                                    cudaStream_t stream)
 {
     (void)converged;
     auto diag_dof_counts  = diag_dof_offsets_counts.counts();
@@ -460,9 +475,10 @@ void GlobalLinearSystem::Impl::apply_preconditioner(muda::DenseVectorView<Float>
     if(global_preconditioner)
     {
         ApplyPreconditionerInfo info{this};
-        info.m_z = z;
-        info.m_r = r;
+        info.m_z         = z;
+        info.m_r         = r;
         info.m_converged = converged;
+        info.m_stream    = stream;
         global_preconditioner->apply(info);
     }
 
@@ -475,6 +491,7 @@ void GlobalLinearSystem::Impl::apply_preconditioner(muda::DenseVectorView<Float>
         info.m_z                       = z.subview(offset, count);
         info.m_r                       = r.subview(offset, count);
         info.m_converged               = converged;
+        info.m_stream                  = stream;
         preconditioner->apply(info);
     }
 
@@ -487,15 +504,15 @@ void GlobalLinearSystem::Impl::apply_preconditioner(muda::DenseVectorView<Float>
             auto count  = diag_dof_counts[i];
             auto z_sub  = z.subview(offset, count);
             auto r_sub  = r.subview(offset, count);
-            z_sub.buffer_view().copy_from(r_sub.buffer_view());
+            cuda_tool::BufferLaunch(stream).copy(z_sub.buffer_view(), r_sub.buffer_view());
         }
     }
 }
 
-void GlobalLinearSystem::Impl::spmv(Float                         a,
-                                    muda::CDenseVectorView<Float> x,
-                                    Float                         b,
-                                    muda::DenseVectorView<Float>  y)
+void GlobalLinearSystem::Impl::spmv(Float                              a,
+                                    cuda_tool::CDenseVectorView<Float> x,
+                                    Float                              b,
+                                    cuda_tool::DenseVectorView<Float>  y)
 {
     spmver.rbk_sym_spmv(a, bcoo_A.cview(), x, b, y);
 
@@ -504,14 +521,23 @@ void GlobalLinearSystem::Impl::spmv(Float                         a,
     //  * spmver.cpu_sym_spmv(a, bcoo_A.cview(), x, b, y);  // Much slower
 }
 
-void GlobalLinearSystem::Impl::spmv_dot(muda::CDenseVectorView<Float> x,
-                                        muda::DenseVectorView<Float>  y,
-                                        muda::VarView<Float>          d_dot)
+void GlobalLinearSystem::Impl::spmv_dot(cuda_tool::CDenseVectorView<Float> x,
+                                        cuda_tool::DenseVectorView<Float>  y,
+                                        cuda_tool::VarView<Float> d_dot,
+                                        cudaStream_t              stream)
 {
-    spmver.rbk_sym_spmv_dot(1.0, bcoo_A.cview(), x, 0.0, y, d_dot);
+    spmver.rbk_sym_spmv_dot(1.0,
+                            bcoo_A.cview(),
+                            x,
+                            0.0,
+                            y,
+                            d_dot,
+                            triplet_count_dev.cviewer(),
+                            bcoo_A.triplet_capacity(),
+                            stream);
 }
 
-bool GlobalLinearSystem::Impl::accuracy_statisfied(muda::DenseVectorView<Float> r)
+bool GlobalLinearSystem::Impl::accuracy_statisfied(cuda_tool::DenseVectorView<Float> r)
 {
     auto diag_dof_counts  = diag_dof_offsets_counts.counts();
     auto diag_dof_offsets = diag_dof_offsets_counts.offsets();
@@ -613,6 +639,11 @@ SizeT GlobalLinearSystem::LocalPreconditionerAssemblyInfo::dof_count() const
     auto diag_dof_counts = m_impl->diag_dof_offsets_counts.counts();
     return diag_dof_counts[m_index];
 }
+
+SizeT GlobalLinearSystem::last_solve_iterations() const noexcept
+{
+    return m_impl.last_solve_iterations;
+}
 }  // namespace uipc::backend::cuda
 
 namespace uipc::backend::cuda
@@ -661,7 +692,7 @@ void GlobalLinearSystem::ComputeGradientInfo::flags(ComponentFlags flags) noexce
     m_flags = flags;
 }
 
-void GlobalLinearSystem::ComputeGradientInfo::buffer_view(muda::DenseVectorView<Float> grad) noexcept
+void GlobalLinearSystem::ComputeGradientInfo::buffer_view(cuda_tool::DenseVectorView<Float> grad) noexcept
 {
     m_gradients = grad;
 }

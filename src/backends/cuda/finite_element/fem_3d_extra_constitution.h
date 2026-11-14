@@ -1,4 +1,5 @@
 #pragma once
+#include <cuda_tool/cuda_tool.h>
 #include <finite_element/finite_element_extra_constitution.h>
 
 namespace uipc::backend::cuda
@@ -26,10 +27,10 @@ class FEM3DExtraConstitution : public FiniteElementExtraConstitution
   public:
     using FiniteElementExtraConstitution::FiniteElementExtraConstitution;
 
-    muda::CBufferView<Vector4i>        element_indices() const noexcept;
-    muda::CBufferView<Float>           element_energies() const noexcept;
-    muda::CDoubletVectorView<Float, 3> element_gradients() const noexcept;
-    muda::CTripletMatrixView<Float, 3> element_hessians() const noexcept;
+    cuda_tool::CBufferView<Vector4i>        element_indices() const noexcept;
+    cuda_tool::CBufferView<Float>           element_energies() const noexcept;
+    cuda_tool::CDoubletVectorView<Float, 3> element_gradients() const noexcept;
+    cuda_tool::CTripletMatrixView<Float, 3> element_hessians() const noexcept;
 
     class BuildInfo
     {
@@ -55,19 +56,19 @@ class FEM3DExtraConstitution : public FiniteElementExtraConstitution
         span<const FiniteElementMethod::GeoInfo> geo_infos() const noexcept;
 
         // Full global position buffer.
-        muda::CBufferView<Vector3> xs() const noexcept;
+        cuda_tool::CBufferView<Vector3> xs() const noexcept;
 
         // Full global rest-position buffer.
-        muda::CBufferView<Vector3> x_bars() const noexcept;
+        cuda_tool::CBufferView<Vector3> x_bars() const noexcept;
 
         // Full global tet-index buffer (Vector4i).
-        muda::CBufferView<Vector4i> indices() const noexcept;
+        cuda_tool::CBufferView<Vector4i> indices() const noexcept;
 
         // Full global Dm-inverse buffer (Matrix3x3).
-        muda::CBufferView<Matrix3x3> Dm_invs() const noexcept;
+        cuda_tool::CBufferView<Matrix3x3> Dm_invs() const noexcept;
 
         // Full global rest-volume buffer.
-        muda::CBufferView<Float> rest_volumes() const noexcept;
+        cuda_tool::CBufferView<Float> rest_volumes() const noexcept;
 
       protected:
         FEM3DExtraConstitution* m_impl = nullptr;
@@ -126,9 +127,9 @@ class FEM3DExtraConstitution : public FiniteElementExtraConstitution
     virtual void do_compute_gradient_hessian(
         FiniteElementExtraConstitution::ComputeGradientHessianInfo& info) override final;
 
-    muda::CBufferView<Vector4i>        m_element_indices;
-    muda::CBufferView<Float>           m_element_energies;
-    muda::CDoubletVectorView<Float, 3> m_element_gradients;
-    muda::CTripletMatrixView<Float, 3> m_element_hessians;
+    cuda_tool::CBufferView<Vector4i>        m_element_indices;
+    cuda_tool::CBufferView<Float>           m_element_energies;
+    cuda_tool::CDoubletVectorView<Float, 3> m_element_gradients;
+    cuda_tool::CTripletMatrixView<Float, 3> m_element_hessians;
 };
 }  // namespace uipc::backend::cuda

@@ -49,3 +49,6 @@ vsxmake*/
 
 # libreoffice
 .~lock.*
+
+# local dev notes
+docs/development/backend_cuda/

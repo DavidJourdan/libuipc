@@ -26,6 +26,13 @@ target_compile_definitions(uipc_core PUBLIC "-DUIPC_PROJECT_DIR=R\"(${PROJECT_SO
 target_compile_definitions(uipc_core PUBLIC "-DUIPC_VERSION_MAJOR=${UIPC_VERSION_MAJOR}")
 target_compile_definitions(uipc_core PUBLIC "-DUIPC_VERSION_MINOR=${UIPC_VERSION_MINOR}")
 target_compile_definitions(uipc_core PUBLIC "-DUIPC_VERSION_PATCH=${UIPC_VERSION_PATCH}")
+if(UIPC_WITH_CUDA_BACKEND AND UIPC_WITH_CUDA_LEGACY_COLLISION)
+    set(UIPC_CUDA_LEGACY_COLLISION_BUILT 1)
+else()
+    set(UIPC_CUDA_LEGACY_COLLISION_BUILT 0)
+endif()
+target_compile_definitions(uipc_core PRIVATE
+    "UIPC_WITH_CUDA_LEGACY_COLLISION=${UIPC_CUDA_LEGACY_COLLISION_BUILT}")
 
 # ------------------------------------------------------------------------------
 # set the target source files
@@ -34,7 +41,7 @@ uipc_target_add_include_files(uipc_core)
 target_include_directories(uipc_core PRIVATE "${DYLIB_INCLUDE_DIRS}")
 target_include_directories(uipc_core PRIVATE "${TINYGLTF_INCLUDE_DIRS}")
 # add the source files in the current directory to the target uipc
-file(GLOB SOURCE "*.h" "*.cpp")
+file(GLOB SOURCE CONFIGURE_DEPENDS "*.h" "*.cpp")
 target_sources(uipc_core PRIVATE ${SOURCE})
 
 
@@ -89,7 +96,7 @@ uipc_target_set_rpath(uipc_core)
 # ------------------------------------------------------------------------------
 # setup source group for the IDE
 # ------------------------------------------------------------------------------
-file(GLOB_RECURSE SOURCE_GROUP_FILES "*.h" "*.cpp" "*.inl")
+file(GLOB_RECURSE SOURCE_GROUP_FILES CONFIGURE_DEPENDS "*.h" "*.cpp" "*.inl")
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}/.." FILES ${SOURCE_GROUP_FILES})
 
 # ------------------------------------------------------------------------------

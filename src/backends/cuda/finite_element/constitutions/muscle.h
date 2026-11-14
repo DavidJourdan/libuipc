@@ -1,3 +1,5 @@
+#pragma once
+#include <cuda_tool/cuda_tool.h>
 #include <finite_element/constitutions/muscle_function.h>
 #include <finite_element/fem_3d_extra_constitution.h>
 #include <finite_element/fem_exporter.h>
@@ -23,9 +25,9 @@ class Muscle final : public FEM3DExtraConstitution
     vector<Float>   h_active_coeffs;
     vector<Vector3> h_directions;
 
-    muda::DeviceBuffer<Float>   passive_coeffs;
-    muda::DeviceBuffer<Float>   active_coeffs;
-    muda::DeviceBuffer<Vector3> directions;
+    cuda_tool::DeviceBuffer<Float>   passive_coeffs;
+    cuda_tool::DeviceBuffer<Float>   active_coeffs;
+    cuda_tool::DeviceBuffer<Vector3> directions;
 
     U64  get_uid() const noexcept override { return ConstitutionUID; }
     void do_build(BuildInfo& info) override {}

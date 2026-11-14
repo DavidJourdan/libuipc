@@ -39,6 +39,7 @@ class ContactTabular::Impl
 
         auto default_element = create("default");
         insert(default_element, default_element, 0.5, 1.0_GPa, true, default_config());
+        m_default_model_user_set = false;
     }
 
     ContactElement create(std::string_view name) noexcept
@@ -60,28 +61,29 @@ class ContactTabular::Impl
                   bool                  enable,
                   const Json&           config)
     {
+        validate_config(config, "ContactTabular::insert");
         Vector2i ids = {L.id(), R.id()};
 
         // check if the contact element id is valid.
         UIPC_ASSERT_THROW(L.id() < current_element_id() && L.id() >= 0
-                        && R.id() < current_element_id() && R.id() >= 0,
-                    "Invalid contact element id, id should be in [{},{}), your L={}, R={}.",
-                    0,
-                    current_element_id(),
-                    L.id(),
-                    R.id());
+                              && R.id() < current_element_id() && R.id() >= 0,
+                          "Invalid contact element id, id should be in [{},{}), your L={}, R={}.",
+                          0,
+                          current_element_id(),
+                          L.id(),
+                          R.id());
 
         // check if the name is matched.
         UIPC_ASSERT_THROW(m_elements[L.id()].name() == L.name()
-                        && m_elements[R.id()].name() == R.name(),
-                    "Contact element name is not matched, L=<{},{}({} required)>, R=<{},{}({} required)>,"
-                    "It seems the contact element and contact model don't come from the same ContactTabular.",
-                    L.id(),
-                    L.name(),
-                    m_elements[L.id()].name(),
-                    R.id(),
-                    R.name(),
-                    m_elements[R.id()].name());
+                              && m_elements[R.id()].name() == R.name(),
+                          "Contact element name is not matched, L=<{},{}({} required)>, R=<{},{}({} required)>,"
+                          "It seems the contact element and contact model don't come from the same ContactTabular.",
+                          L.id(),
+                          L.name(),
+                          m_elements[L.id()].name(),
+                          R.id(),
+                          R.name(),
+                          m_elements[R.id()].name());
 
         // ensure ids.x() < ids.y(), because the contact model is symmetric.
         if(ids.x() > ids.y())
@@ -144,11 +146,13 @@ class ContactTabular::Impl
         return ContactModel{Vector2i{i, j}, friction_rate, resistance, enable, Json::object()};
     }
 
-    void default_model(Float friction_rate, Float resistance, bool enable, const Json& config) noexcept
+    void default_model(Float friction_rate, Float resistance, bool enable, const Json& config)
     {
+        validate_config(config, "ContactTabular::default_model");
         view(*m_friction_rates)[0] = friction_rate;
         view(*m_resistances)[0]    = resistance;
         view(*m_is_enabled)[0]     = enable;
+        m_default_model_user_set   = true;
     }
 
     ContactModel default_model() const noexcept { return at(0, 0); }
@@ -172,6 +176,16 @@ class ContactTabular::Impl
 
     static Json default_config() noexcept { return Json::object(); }
 
+    static void validate_config(const Json& config, std::string_view caller)
+    {
+        UIPC_ASSERT_THROW(config.is_object() && config.empty(),
+                          "{} does not define per-model config keys; expected an empty "
+                          "object, got {}. Use friction_rate, resistance, and enable for "
+                          "supported contact behavior.",
+                          caller,
+                          config.dump());
+    }
+
     vector<ContactElement>        m_elements;
     geometry::AttributeCollection m_models;
     SizeT                         m_model_capacity = 1024;
@@ -181,7 +195,9 @@ class ContactTabular::Impl
     mutable S<geometry::AttributeSlot<Vector2i>> m_topo;
     mutable S<geometry::AttributeSlot<Float>>    m_friction_rates;
     mutable S<geometry::AttributeSlot<Float>>    m_resistances;
-    mutable S<geometry::AttributeSlot<IndexT>>   m_is_enabled;
+
+    bool                                       m_default_model_user_set = false;
+    mutable S<geometry::AttributeSlot<IndexT>> m_is_enabled;
 
     void _append_contact_models()
     {
@@ -194,13 +210,16 @@ class ContactTabular::Impl
         m_models.resize(new_size);
     }
 
-    void build_from(const geometry::AttributeCollection& ac, span<const ContactElement> ce)
+    void build_from(const geometry::AttributeCollection& ac,
+                    span<const ContactElement>           ce,
+                    bool                                 default_model_user_set)
     {
         m_elements.clear();
         m_elements = vector<ContactElement>(ce.begin(), ce.end());
 
-        m_models = ac;
-        m_topo   = m_models.find<Vector2i>("topo");
+        m_models                 = ac;
+        m_default_model_user_set = default_model_user_set;
+        m_topo                   = m_models.find<Vector2i>("topo");
         UIPC_ASSERT_THROW(m_topo, "Contact model topology is not found, please check the attribute collection.");
         m_friction_rates = m_models.find<Float>("friction_rate");
         UIPC_ASSERT_THROW(m_friction_rates, "Contact model friction rates is not found, please check the attribute collection.");
@@ -219,13 +238,15 @@ class ContactTabular::Impl
     }
 
     void update_from(const geometry::AttributeCollectionCommit& ac,
-                     span<const ContactElement>                 ce)
+                     span<const ContactElement>                 ce,
+                     bool default_model_user_set)
     {
         m_elements.clear();
         m_elements = vector<ContactElement>(ce.begin(), ce.end());
 
         m_models.update_from(ac);
-        m_topo = m_models.find<Vector2i>("topo");
+        m_default_model_user_set = default_model_user_set;
+        m_topo                   = m_models.find<Vector2i>("topo");
         UIPC_ASSERT_THROW(m_topo, "Contact model topology is not found, please check the attribute collection.");
         m_friction_rates = m_models.find<Float>("friction_rate");
         UIPC_ASSERT_THROW(m_friction_rates, "Contact model friction rates is not found, please check the attribute collection.");
@@ -234,6 +255,7 @@ class ContactTabular::Impl
         m_is_enabled = m_models.find<IndexT>("is_enabled");
         UIPC_ASSERT_THROW(m_is_enabled, "Contact model is_enabled is not found, please check the attribute collection.");
 
+        m_model_map.clear();
         auto topo_view = m_topo->view();
         for(SizeT i = 0; i < topo_view.size(); ++i)
         {
@@ -270,10 +292,7 @@ ContactModel ContactTabular::at(IndexT i, IndexT j) const
     return m_impl->at(i, j);
 }
 
-void ContactTabular::default_model(Float       friction_rate,
-                                   Float       resistance,
-                                   bool        enable,
-                                   const Json& config) noexcept
+void ContactTabular::default_model(Float friction_rate, Float resistance, bool enable, const Json& config)
 {
     m_impl->default_model(friction_rate, resistance, enable, config);
 }
@@ -286,6 +305,11 @@ ContactElement ContactTabular::default_element() noexcept
 ContactModel ContactTabular::default_model() const noexcept
 {
     return m_impl->default_model();
+}
+
+bool ContactTabular::default_model_is_user_set() const noexcept
+{
+    return m_impl->m_default_model_user_set;
 }
 
 ContactModelCollection ContactTabular::contact_models() noexcept
@@ -319,20 +343,23 @@ Json ContactTabular::default_config() noexcept
 }
 
 void ContactTabular::build_from(const geometry::AttributeCollection& ac,
-                                span<const ContactElement>           ce)
+                                span<const ContactElement>           ce,
+                                bool default_model_user_set)
 {
-    m_impl->build_from(ac, ce);
+    m_impl->build_from(ac, ce, default_model_user_set);
 }
 
 void ContactTabular::update_from(const geometry::AttributeCollectionCommit& ac,
-                                 span<const ContactElement>                 ce)
+                                 span<const ContactElement>                 ce,
+                                 bool default_model_user_set)
 {
-    m_impl->update_from(ac, ce);
+    m_impl->update_from(ac, ce, default_model_user_set);
 }
 
 void to_json(Json& j, const ContactTabular& ct)
 {
-    j["contact_elements"] = ct.contact_elements();
-    j["contact_models"]   = ct.contact_models().to_json();
+    j["contact_elements"]       = ct.contact_elements();
+    j["contact_models"]         = ct.contact_models().to_json();
+    j["default_model_user_set"] = ct.default_model_is_user_set();
 }
 }  // namespace uipc::core

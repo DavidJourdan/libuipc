@@ -1,6 +1,8 @@
 #include <uipc/constitution/discrete_shell_bending.h>
 #include <uipc/builtin/constitution_type.h>
 #include <uipc/builtin/constitution_uid_auto_register.h>
+#include <uipc/builtin/attribute_name.h>
+#include <uipc/common/log.h>
 
 namespace uipc::constitution
 {
@@ -32,6 +34,48 @@ void DiscreteShellBending::apply_to(geometry::SimplicialComplex& sc, Float bendi
     }
     auto bs_view = geometry::view(*bs);
     std::ranges::fill(bs_view, bending_stiffness_v);
+}
+
+Float DiscreteShellBending::bending_stiffness(Float young_modulus,
+                                              Float poisson_ratio,
+                                              Float thickness) noexcept
+{
+    // `thickness` is the one-sided collision offset r. Classical shell
+    // bending uses the full material thickness h = 2r. The hinge energy
+    // is kappa * (L0 / h_bar) * delta_theta^2, so kappa = D / 2.
+    Float full_thickness = 2 * thickness;
+    return young_modulus * full_thickness * full_thickness * full_thickness
+           / (24.0 * (1.0 - poisson_ratio * poisson_ratio));
+}
+
+void DiscreteShellBending::apply_to(geometry::SimplicialComplex& sc, Float young_modulus, Float poisson_ratio)
+{
+    Base::apply_to(sc);
+
+    // thickness lives on the mesh (set by the membrane/stretch constitution);
+    // bending is optional, so it reads the attribute instead of re-taking it.
+    auto attr_thickness = sc.vertices().find<Float>(builtin::thickness);
+    UIPC_ASSERT_THROW(attr_thickness != nullptr,
+                      "DiscreteShellBending::apply_to(sc, E, nu) needs the vertex thickness "
+                      "attribute; apply a membrane (stretch) constitution with thickness first, "
+                      "or use apply_to(sc, bending_stiffness) for a raw value.");
+
+    auto t_view = geometry::view(*attr_thickness);
+    auto edges  = sc.edges().topo().view();
+
+    auto bs = sc.edges().find<Float>("bending_stiffness");
+    if(!bs)
+    {
+        bs = sc.edges().create<Float>("bending_stiffness");
+    }
+    auto bs_view = geometry::view(*bs);
+
+    for(SizeT i = 0; i < edges.size(); ++i)
+    {
+        // Average the one-sided offsets, then convert to full material thickness.
+        Float radius_e = (t_view[edges[i](0)] + t_view[edges[i](1)]) * 0.5;
+        bs_view[i] = bending_stiffness(young_modulus, poisson_ratio, radius_e);
+    }
 }
 
 U64 DiscreteShellBending::get_uid() const noexcept

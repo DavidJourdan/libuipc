@@ -5,6 +5,7 @@
 namespace pyuipc::constitution
 {
 using namespace uipc::constitution;
+using namespace uipc::geometry;
 PyDiscreteShellBending::PyDiscreteShellBending(py::module& m)
 {
     auto class_DiscreteShellBending =
@@ -23,13 +24,41 @@ Args:
 Returns:
     dict: Default configuration dictionary.)");
 
-    class_DiscreteShellBending.def("apply_to",
-                                   &DiscreteShellBending::apply_to,
-                                   py::arg("sc"),
-                                   py::arg("bending_stiffness") = 100.0_kPa,
-                                   R"(Apply DiscreteShellBending constitution to a simplicial complex.
+    class_DiscreteShellBending.def(
+        "apply_to",
+        [](DiscreteShellBending& self, SimplicialComplex& sc, Float bending_stiffness)
+        { self.apply_to(sc, bending_stiffness); },
+        py::arg("sc"),
+        py::arg("bending_stiffness") = 100.0_kPa,
+        R"(Apply DiscreteShellBending constitution to a simplicial complex.
 Args:
     sc: SimplicialComplex to apply to.
-    bending_stiffness: Bending stiffness in kPa (default: 100.0 kPa).)");
+    bending_stiffness: Raw kappa coefficient in the Discrete Shells edge energy
+        (legacy numeric default: 100000).)");
+
+    class_DiscreteShellBending.def(
+        "apply_to",
+        [](DiscreteShellBending& self, SimplicialComplex& sc, Float young_modulus, Float poisson_ratio)
+        { self.apply_to(sc, young_modulus, poisson_ratio); },
+        py::arg("sc"),
+        py::arg("young_modulus"),
+        py::arg("poisson_ratio"),
+        R"(Apply DiscreteShellBending constitution to a simplicial complex, computing
+the hinge coefficient kappa = D/2 = E*h^3/(24*(1-nu^2)) in N*m, where D is
+the classical flexural rigidity. The mesh stores the one-sided collision offset r in its
+vertex "thickness" attribute; the full material thickness is h=2r. The radius
+is averaged over each edge, so a membrane constitution must be applied first.
+Args:
+    sc: SimplicialComplex to apply to.
+    young_modulus: Young's modulus of the shell material.
+    poisson_ratio: Poisson's ratio of the shell material.)");
+
+    class_DiscreteShellBending.def_static("bending_stiffness",
+                                          &DiscreteShellBending::bending_stiffness,
+                                          py::arg("young_modulus"),
+                                          py::arg("poisson_ratio"),
+                                          py::arg("thickness"),
+                                          R"(Compute the Discrete Shells hinge coefficient
+E*h^3/(24*(1-nu^2)) = D/2 in N*m from the one-sided thickness radius r, with h=2r.)");
 }
 }  // namespace pyuipc::constitution

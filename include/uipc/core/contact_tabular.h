@@ -40,15 +40,28 @@ class UIPC_CORE_API ContactTabular final
                   bool                  enable = true,
                   const Json&           config = default_config());
 
+    // No per-model extension keys are currently defined. A non-empty config
+    // is rejected instead of being silently ignored.
+
     ContactModel at(IndexT i, IndexT j) const;
 
     void default_model(Float       friction_rate,
                        Float       resistance,
                        bool        enable = true,
-                       const Json& config = default_config()) noexcept;
+                       const Json& config = default_config());
 
     ContactElement default_element() noexcept;
     ContactModel   default_model() const noexcept;
+
+    /**
+     * @brief Whether default_model(...) was ever called by the user.
+     *
+     * Used by the backend to resolve the default contact stiffness:
+     * unset -> use contact/adaptive/min_kappa; set -> clamp the user's value
+     * into [min_kappa, max_kappa] (a warning reminds the user of the range);
+     * negative values (adaptive-kappa opt-in) are never clamped.
+     */
+    bool default_model_is_user_set() const noexcept;
 
 
     friend UIPC_CORE_API void to_json(Json& j, const ContactTabular& ct);
@@ -66,9 +79,12 @@ class UIPC_CORE_API ContactTabular final
     friend class SceneFactory;
     geometry::AttributeCollection& internal_contact_models() const noexcept;
     span<ContactElement>           contact_elements() const noexcept;
-    void build_from(const geometry::AttributeCollection& ac, span<const ContactElement> ce);
+    void build_from(const geometry::AttributeCollection& ac,
+                    span<const ContactElement>           ce,
+                    bool default_model_user_set);
     void update_from(const geometry::AttributeCollectionCommit& acc,
-                     span<const ContactElement>                 ce);
+                     span<const ContactElement>                 ce,
+                     bool default_model_user_set);
 };
 
 UIPC_CORE_API void to_json(Json& j, const ContactTabular& ct);

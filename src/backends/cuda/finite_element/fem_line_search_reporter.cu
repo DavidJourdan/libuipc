@@ -3,12 +3,38 @@
 #include <finite_element/finite_element_kinetic.h>
 #include <finite_element/finite_element_constitution.h>
 #include <finite_element/finite_element_extra_constitution.h>
-#include <muda/cub/device/device_reduce.h>
+#include <cuda_tool/cub.h>
+#include <cuda_tool/cuda_tool.h>
 #include <kernel_cout.h>
-#include <muda/ext/eigen/log_proxy.h>
 
 namespace uipc::backend::cuda
 {
+namespace
+{
+    __global__ void FEMLineSearchReporter_step_forward_kernel(
+        cuda_tool::CBufferView<Vector3> x_temps,
+        cuda_tool::BufferView<Vector3>  xs,
+        cuda_tool::CBufferView<Vector3> dxs,
+        Float                           alpha,
+        int                             n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        xs(i) = x_temps(i) + alpha * dxs(i);
+    }
+
+    __global__ void FEMLineSearchReporter_combine_energy_kernel(
+        cuda_tool::CVarView<Float> kinetic_energy,
+        cuda_tool::CVarView<Float> reporter_energy,
+        cuda_tool::VarView<Float>  total_energy)
+    {
+        if(blockIdx.x != 0 || threadIdx.x != 0)
+            return;
+        *total_energy = *kinetic_energy + *reporter_energy;
+    }
+}  // namespace
+
 REGISTER_SIM_SYSTEM(FEMLineSearchReporter);
 
 void FEMLineSearchReporter::do_init(InitInfo& info)
@@ -38,33 +64,30 @@ void FEMLineSearchReporter::do_compute_energy(LineSearcher::ComputeEnergyInfo& i
 
 void FEMLineSearchReporter::Impl::record_start_point(LineSearcher::RecordInfo& info)
 {
-    using namespace muda;
+    using namespace cuda_tool;
 
     fem().x_temps = fem().xs;
 }
 
 void FEMLineSearchReporter::Impl::step_forward(LineSearcher::StepInfo& info)
 {
-    using namespace muda;
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(fem().xs.size(),
-               [is_fixed = fem().is_fixed.cviewer().name("is_fixed"),
-                x_temps  = fem().x_temps.cviewer().name("x_temps"),
-                xs       = fem().xs.viewer().name("xs"),
-                dxs      = fem().dxs.cviewer().name("dxs"),
-                alpha    = info.alpha] __device__(int i) mutable
-               { xs(i) = x_temps(i) + alpha * dxs(i); });
+    auto k = FEMLineSearchReporter_step_forward_kernel;
+    int  n = (int)fem().xs.size();
+    if(n > 0)
+    {
+        k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+            fem().x_temps.cview(), fem().xs.view(), fem().dxs.cview(), info.alpha, n);
+    }
 }
 
 void FEMLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo& info)
 {
-    using namespace muda;
+    using namespace cuda_tool;
 
     // Compute Kinetic (special)
     {
         auto vertex_count = fem().xs.size();
-        kinetic_energies.resize(vertex_count);
+        kinetic_energies.resize_discard(vertex_count);
         auto kinetic_info = ComputeEnergyInfo{kinetic_energies.view(), info.dt()};
         finite_element_kinetic->compute_energy(kinetic_info);
 
@@ -85,7 +108,7 @@ void FEMLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
         }
 
         reporter_energy_offsets_counts.scan();
-        reporter_energies.resize(reporter_energy_offsets_counts.total_count());
+        reporter_energies.resize_discard(reporter_energy_offsets_counts.total_count());
 
         for(auto&& [i, R] : enumerate(reporter_view))
         {
@@ -100,16 +123,13 @@ void FEMLineSearchReporter::Impl::compute_energy(LineSearcher::ComputeEnergyInfo
                            reporter_energies.size());
     }
 
-    Float K       = total_kinetic_energy;
-    Float other_E = total_reporter_energy;
-    Float total_E = K + other_E;
-
-    info.energy(total_E);
+    FEMLineSearchReporter_combine_energy_kernel<<<1, 1>>>(
+        total_kinetic_energy.cview(), total_reporter_energy.cview(), info.energy());
 }
 
 void FEMLineSearchReporter::Impl::init(LineSearchReporter::InitInfo& info)
 {
-    kinetic_energies.resize(fem().xs.size());
+    kinetic_energies.resize_discard(fem().xs.size());
 
     auto reporter_view = reporters.view();
     for(auto&& [i, R] : enumerate(reporter_view))

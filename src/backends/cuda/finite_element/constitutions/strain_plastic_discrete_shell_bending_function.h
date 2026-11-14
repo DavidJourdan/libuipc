@@ -1,5 +1,6 @@
 #pragma once
 #include <type_define.h>
+#include <finite_element/constitutions/discrete_shell_bending_reference.h>
 #include <utils/dihedral_angle.h>
 #include <cmath>
 
@@ -42,7 +43,8 @@ namespace sym::strain_plastic_discrete_shell_bending
     template <typename T>
     inline UIPC_GENERIC bool is_finite_vec3(const Eigen::Matrix<T, 3, 1>& v)
     {
-        return is_finite_scalar(v[0]) && is_finite_scalar(v[1]) && is_finite_scalar(v[2]);
+        return is_finite_scalar(v[0]) && is_finite_scalar(v[1])
+               && is_finite_scalar(v[2]);
     }
 
     template <typename T>
@@ -71,7 +73,7 @@ namespace sym::strain_plastic_discrete_shell_bending
                                                  const Eigen::Matrix<T, 3, 1>& v1,
                                                  const Eigen::Matrix<T, 3, 1>& v2,
                                                  const Eigen::Matrix<T, 3, 1>& v3,
-                                                 T&                            theta)
+                                                 T& theta)
     {
         if(!is_finite_vec3(v0) || !is_finite_vec3(v1) || !is_finite_vec3(v2)
            || !is_finite_vec3(v3))
@@ -108,10 +110,7 @@ namespace sym::strain_plastic_discrete_shell_bending
     }
 
     template <typename T>
-    inline UIPC_GENERIC bool update_plastic_state(T  theta,
-                                                  T& theta_bar,
-                                                  T& yield_threshold,
-                                                  T  hardening_modulus)
+    inline UIPC_GENERIC bool update_plastic_state(T theta, T& theta_bar, T& yield_threshold, T hardening_modulus)
     {
         if(!is_finite_scalar(theta) || !is_finite_scalar(theta_bar)
            || !is_finite_scalar(yield_threshold) || !is_finite_scalar(hardening_modulus)
@@ -139,9 +138,9 @@ namespace sym::strain_plastic_discrete_shell_bending
                                              const Eigen::Matrix<T, 3, 1>& x1,
                                              const Eigen::Matrix<T, 3, 1>& x2,
                                              const Eigen::Matrix<T, 3, 1>& x3,
-                                             T                            theta_bar,
-                                             T&                           theta,
-                                             T&                           delta)
+                                             T  theta_bar,
+                                             T& theta,
+                                             T& delta)
     {
         if(!is_finite_scalar(theta_bar))
             return false;
@@ -166,15 +165,8 @@ namespace sym::strain_plastic_discrete_shell_bending
                                                Float          thickness2,
                                                Float          thickness3)
     {
-        L0         = (x2_bar - x1_bar).norm();
-        Vector3 n1 = (x1_bar - x0_bar).cross(x2_bar - x0_bar);
-        Vector3 n2 = (x2_bar - x3_bar).cross(x1_bar - x3_bar);
-        Float   A  = (n1.norm() + n2.norm()) / 2.0;
-        h_bar      = A / 3.0 / L0;
-        dihedral_angle(x0_bar, x1_bar, x2_bar, x3_bar, theta_bar);
-
-        Float thickness = (thickness0 + thickness1 + thickness2 + thickness3) / 4.0;
-        V_bar = A * thickness;
+        detail::compute_discrete_shell_bending_reference(
+            L0, h_bar, theta_bar, V_bar, x0_bar, x1_bar, x2_bar, x3_bar);
     }
 
     inline UIPC_GENERIC Float E(const Vector3& x0,
@@ -187,8 +179,8 @@ namespace sym::strain_plastic_discrete_shell_bending
                                 Float          kappa)
     {
         namespace PDSB = sym::strain_plastic_discrete_shell_bending;
-        Float theta = 0.0;
-        Float delta = 0.0;
+        Float theta    = 0.0;
+        Float delta    = 0.0;
         if(!PDSB::try_angle_delta(x0, x1, x2, x3, theta_bar, theta, delta))
             return 0.0;
 
@@ -208,8 +200,8 @@ namespace sym::strain_plastic_discrete_shell_bending
                                   Float          kappa)
     {
         namespace PDSB = sym::strain_plastic_discrete_shell_bending;
-        Float theta = 0.0;
-        Float delta = 0.0;
+        Float theta    = 0.0;
+        Float delta    = 0.0;
         if(!PDSB::try_angle_delta(x0, x1, x2, x3, theta_bar, theta, delta))
         {
             G.setZero();
@@ -236,8 +228,8 @@ namespace sym::strain_plastic_discrete_shell_bending
                                     Float          kappa)
     {
         namespace PDSB = sym::strain_plastic_discrete_shell_bending;
-        Float theta = 0.0;
-        Float delta = 0.0;
+        Float theta    = 0.0;
+        Float delta    = 0.0;
         if(!PDSB::try_angle_delta(x0, x1, x2, x3, theta_bar, theta, delta))
         {
             H.setZero();

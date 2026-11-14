@@ -33,7 +33,12 @@ Usage::
 import importlib.util
 import pathlib
 
-from huggingface_hub import HfApi, RepoFolder, snapshot_download
+from huggingface_hub import HfApi, snapshot_download
+
+try:  # huggingface_hub < 0.30 re-exports RepoFolder at top level
+    from huggingface_hub import RepoFolder
+except ImportError:  # newer versions keep it in hf_api only
+    from huggingface_hub.hf_api import RepoFolder
 from uipc import Scene, SceneIO
 from uipc.geometry import SimplicialComplex, SimplicialComplexIO
 
@@ -62,7 +67,7 @@ def strip_constitutions(scene: Scene) -> None:
         scene: A :class:`uipc.Scene` whose geometries have already been
                populated by ``build_scene`` or ``load``.
     """
-    for obj_id in range(scene.objects().size()):
+    for obj_id in range(scene.objects().created_count()):
         obj = scene.objects().find(obj_id)
         if obj is None:
             continue

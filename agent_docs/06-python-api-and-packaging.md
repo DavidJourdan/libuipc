@@ -1,0 +1,192 @@
+# 06 — Python API and Packaging
+
+## pybind structure (`src/pybind/pyuipc/`)
+
+`PYBIND11_MODULE(pyuipc, m)` in the entry `module.cpp`:
+
+- Submodules: `unit`, `geometry`, `constitution`, `diff_sim`, `core`, `backend`, `builtin`, `usd`. The `usd` module object is created unconditionally, but USD classes are registered only when `UIPC_WITH_USD_SUPPORT` is enabled.
+- C++ namespaces `pyuipc::xxx` map one-to-one to Python submodules `pyuipc.xxx`; each subdirectory has its own `module.cpp` that binds classes one by one via the `PyXxx{m}` constructor.
+- **Early exposure**: the main `module.cpp` first binds the core data structures (`PyFeature`, `PyBufferView`, `PyAttributeSlot`, `PyGeometry`, `PySimplicialComplex`, the various Slots, `PyParameterCollection`), then calls each submodule's `PyModule` (geometry utilities/IO depend on core types).
+- Top-level aliases: `Engine`, `World`, `Scene`, `SceneIO`, `Animation` are promoted to the `pyuipc` top level; also registers `init`, `default_config`, `config`, `build_info`, `uipc::Exception`, `__version__`. `build_info()` reports the compiled Python ABI, build type, CUDA-backend flag, CUDA architectures, and toolkit version for runtime diagnosis.
+- Build: `pybind11_add_module(pyuipc)` links `uipc::uipc` and depends on every backend. Backend target files are also `LINK_DEPENDS`, so changing only a backend still relinks pyuipc and runs POST_BUILD `scripts/after_build_pyuipc.py` (copies the package/runtime libraries, regenerates `.pyi`, and refreshes the development install).
+
+## Directional cloth parameters
+
+`StrainLimitingBaraffWitkinShell.apply_to` retains both old signatures and
+keywords. Its additional overload requires keyword-only `stretch_a_moduli`,
+`stretch_b_moduli` and `shear_moduli`; trailing density/thickness/strain-rate
+defaults are unchanged. C++ accepts the same three required moduli positionally.
+`lambda` stores Ka, optional `stretch_stiffness_b` stores Kb, and `mu` stores Kg.
+When the optional attribute is absent, the backend reads each triangle's lambda
+for both directions without creating an override. Reapplying an old overload
+removes the override. Serialization preserves its presence/absence.
+
+The directions are the existing canonical rest-frame axes, not user UVs.
+Each E/nu pair retains the legacy coefficient convention; nu does not specify
+transverse contraction. Portable and CUDA trajectory regressions live in
+`python/tests/test_baraff_witkin_anisotropy.py`.
+
+## Stitch index arrays
+
+Both `SoftVertexStitch.create_geometry` overloads bind `stitched_vert_ids` as
+`py::array_t<IndexT, py::array::c_style | py::array::forcecast>`. Dtype and layout
+conversion happen at the binding boundary, where the owner remains alive for
+the whole call. Inputs have shape `(N, 2)` or `(N, 2, 1)`; `int64`, sliced,
+reversed, transposed, Fortran-order and read-only arrays are supported for valid
+indices. The native geometry copies the pairs into `instances.topo`.
+
+Issue #498 previously declared these indices as `Float`, so `as_span_of` could
+return a view into a freed temporary integer conversion. The shared helper
+borrows memory and does not normalize strides: binding authors must keep a
+matching-dtype owner alive and supply the layout expected by the native span.
+CPU regression coverage is in `python/tests/test_soft_vertex_stitch.py`.
+
+## Python package layout (`python/src/uipc/`)
+
+- `__init__.py`: on import, first calls `pyuipc.init(config)` (injecting `module_dir` pointing to `_native`), then `from ._native.pyuipc import *`.
+- `core.py / geometry.py / constitution.py / backend.py / builtin.py / diff_sim.py / unit.py`: each is a single line `from uipc._native.pyuipc.xxx import *` (pure forwarding of the native module).
+- Python `Engine` exposes the full C++ metadata/status surface:
+  `to_json()`, `frame_stats()`, `status()`, and `features()`;
+  `EngineStatusCollection.clear()` is also bound. CUDA frame statistics are a
+  small schema-versioned per-frame object, while unsupported backends return an
+  empty dictionary.
+- Pure-Python enhancement layer:
+  - `gui.py` (polyscope visualization)
+  - `profile/` (phase-correct benchmark timing, deterministic performance
+    baseline/check gates, and the `nsight.py` Nsight Compute wrapper)
+  - `cli/` (`benchmark`, queryable `config-schema`, compatibility `doctor`,
+    `mesh_doctor`, `uid_info`);
+  `python -m uipc <command>` and the `uipc` console script dispatch these tools
+  - `adapter/torch`, `adapter/warp` (ML framework adapters)
+  - `assets/` (downloads scenes from HuggingFace `MuGdxy/uipc-assets`; each asset has a `scene.py` with `build_scene(scene)`)
+  - `stats.py`, `dev/`
+- Examples: `python/examples/` (4 demos: shell plastic crease ×2, prismatic/revolute joint limit GUI).
+
+The base wheel installs `numpy`, `matplotlib`, `polyscope`, and
+`huggingface_hub`, covering the statistics/reporting and asset layers. The
+torch/warp adapters still require their own optional frameworks.
+
+## Packaging pipeline
+
+**Official release (root `pyproject.toml`, scikit-build-core)**:
+- Version is generated dynamically by `setuptools_scm` (release-branch-semver).
+- `python/src/uipc/compatibility.json` is the canonical release support policy.
+  `scripts/check_release_policy.py` verifies both pyprojects, classifiers, the
+  workflow ABI/toolkit matrix, and the CMake wheel architecture list against it.
+- `wheel.packages = ["python/src/uipc"]`; CMake defines `UIPC_BUILD_PYBIND/WHEEL=ON`, targets `75-real;80-real;86-real;89-real;120-real;89-virtual`, and disables tests/examples/benchmarks. This gives Turing/Ampere/Ada/Blackwell-consumer native code plus a forward-compatible PTX path. Every final, component, and test CUDA target uses `uipc_set_target_cuda_architectures(...)`, which sets the property without list expansion and reads it back as a configure-time invariant; 0.0.27 and earlier shipped Turing-only SASS with no PTX because raw `set_target_properties` truncated the list.
+- When `if(DEFINED SKBUILD)`, `UIPC_INSTALL_DIR = uipc/_native`: the pyuipc extension + vcpkg runtime DLLs are all installed into `_native/` inside the package; `.pyi` stubs are installed to the package root.
+- cibuildwheel: on Linux, auditwheel defensively excludes CUDA Toolkit
+  libraries. The current backend has no dynamic Toolkit dependency; a
+  post-build `readelf`/`dumpbin` audit rejects any regression before upload.
+- On Windows, scikit-build-core may select the Visual Studio generator. The
+  final CUDA target owns a generated comment-only `.cu` language anchor so VS
+  schedules the RDC device-link for the 198 functional objects supplied by
+  CMake OBJECT domains. Without it all ABI jobs reach the final DLL and fail
+  with unresolved `__cudaRegisterLinkedBinary_*` symbols. This is a general
+  CMake multi-config fix, not a wheel-only Ninja override.
+- Published wheels through 0.0.27 rely on the system CUDA 12 runtime:
+  `dumpbin /DEPENDENTS uipc_backend_cuda.dll` shows a direct
+  `cublas64_12.dll` import. Current source replaces the four cuBLAS dot/norm
+  calls with persistent raw-CUDA/CUB reductions and removes the CMake/XMake
+  link. The resulting backend has no CUDA Toolkit DLL import; future wheels
+  require only a compatible NVIDIA driver. Packaged SASS uses the CUDA 12.x
+  minor-compatibility floors (Linux >=525.60.13, Windows >=528.33); a GPU that
+  relies on the wheel builder's CUDA 12.8 Update 1 PTX JIT instead requires
+  Linux >=570.124.06 or Windows >=572.61. The build toolkit remains 12.8 for a
+  reproducible binary baseline.
+
+**Development mode (`python/pyproject.toml` + `python/setup.py`)**:
+
+- The root backend remains `scikit_build_core.build`, with Git-derived
+  distribution metadata. Build requirements explicitly include pybind11,
+  pybind11-stubgen, numpy and typing_extensions. No custom PEP 517 shim,
+  XMake editable builder selector or editable-only version override is added.
+- Direct CMake configuration reuses importable modules and auto-installs missing
+  ones with the selected Python's pip, then verifies the import. When SKBUILD
+  is defined, dependency setup belongs to the frontend; --no-build-isolation
+  requires callers to provision the same build requirements.
+- The existing helper removes an installed old `pyuipc` before package staging
+  and stub generation. This uninstall-first ordering is intentional and was
+  explicitly reaffirmed by the owner on 2026-09-16; preserve it. It must not be
+  reported as a defect or confused with the independent source/build-directory
+  aliasing risk in audit A03.
+- During the CMake build, `after_build_pyuipc.py` copies `python/src/` + pyproject to `<build>/python/`, copies the extension and shared libraries into `src/uipc/_native/`, generates stubs, and in non-wheel mode runs `pip install` directly.
+- CMake post-build and `xmake pack` both call `scripts/pyuipc_stubgen.py`.
+  It regenerates the complete `uipc` stub tree at the staged package root,
+  rather than generating only extension-level stubs inside `_native`.
+  XMake installs missing stub-generation dependencies with `uv pip --python`
+  targeting its chosen Python interpreter.
+- `setup.py`'s `BuildPyCommand` collects dll/so from `build/vcpkg_installed/<triplet>/{bin,lib}` and `build/<config>/bin`.
+- uv editable development: `uv run --no-sync pytest python/tests` (`--no-sync` avoids rebuilding every time).
+
+## Python tests
+
+`python/tests/`, pytest: 19 `test_*.py` files and 75 top-level test functions at
+the audited revision. Prerequisite: pyuipc installed (CMake build or
+`uv pip install -e .`).
+
+The release matrix and immutable 0.0.27 release cover CPython 3.10-3.14 on
+Windows and manylinux.
+
+Pytest excludes `example` and `cuda` by default, so the portable unit suite can
+run on wheel builders without a display or NVIDIA device. Select GPU coverage
+explicitly with `pytest -m "cuda and not example" python/tests`; interactive
+examples remain opt-in with `-m example`. Tests that replace `uipc` modules must
+restore `sys.modules` before returning so collection order cannot hide the real
+package. Each cibuildwheel environment runs both the metadata/backend smoke test
+and the portable pytest suite against the installed wheel.
+
+Release verification must go beyond `import uipc`: importing loads the pybind
+extension and core DLLs, while the backend is loaded lazily. At minimum create
+`Engine("cuda", temporary_workspace)` from a clean environment; preferably
+advance one asset-free frame. Binary dependency inspection proves Toolkit
+independence, but only a GPU probe detects driver, code-image, and execution
+failures.
+
+## Key points for extending bindings
+
+- When adding a new C++ public API, consider syncing the pybind side: add a `PyXxx` binding file in the corresponding submodule directory and register it in that directory's `module.cpp`; keep the namespace mapping consistent.
+- Do not break the import chain in `__init__.py` (`pyuipc` → `init()` → `config["module_dir"]`).
+- New binding surfaces need tests added in `python/tests/`.
+- Audit exports rather than assuming C++/Python parity. `RotatingMotor` and
+  `LinearMotor` are registered by
+  `constitution/soft_transform_constraint.cpp`; an earlier hand-maintained audit
+  incorrectly called them missing, which is why generated drift checks are
+  preferable to prose inventories.
+
+## Packaging/helper invariants
+
+- Root and development metadata both include `matplotlib`, require
+  `pytest>=9.0.3` for the dev extra, and describe the prebuilt-wheel NVIDIA
+  driver requirement consistently. `compatibility.json` separately records
+  the 12.8 build toolkit, static runtime policy, and platform driver floors.
+- `python -m uipc doctor [--probe-cuda] [--json]` separates Python ABI, native
+  extension ABI, self-contained CUDA runtime, backend-load, driver, and
+  GPU-code-image failures. It consumes both packaged `compatibility.json` and
+  native `build_info()` instead of guessing from the package version, selects
+  SASS before PTX when both can serve a GPU, and applies the higher driver floor
+  only when PTX JIT is actually required.
+- The Warp adapter falls back to the dtype's element size when a one-dimensional
+  array reports no stride; a focused optional-Warp test covers this path.
+- Python exposes `Scene.Objects.created_count()` as the exclusive object-ID upper
+  bound. `assets.strip_constitutions` uses it so deleted/sparse object IDs do not
+  leave higher-ID geometry partially processed.
+
+## Frontend-visible changes (2026-08-24)
+
+- `uipc.geometry.mesh_partition` was REMOVED from the python API. The MAS
+  preconditioner is now a scene-level switch:
+  `config["linear_system"]["fem_preconditioner"] = "mas"` (default
+  `"diag"`), which auto-partitions every FEM geometry internally (fixed
+  cluster size 16). Old scripts calling `mesh_partition(...)` raise
+  ImportError — migrate them to the config switch.
+- `newton/min_iter` semantics narrowed: it is now a pure hard floor with
+  default `0` (no forced minimum). On the standard IPC path, the semi-implicit
+  beta accumulation start lives at
+  `config["newton"]["semi_implicit"]["K_min"]` (default 6), and
+  semi-implicit termination is enabled by default. AL-IPC consumes the same
+  `enable` and `K_min` keys for its cumulative-safe-path delay, but compares
+  remaining weight with `config["contact"]["al-ipc"]["toi_threshold"]`;
+  `beta_tol` is IPC-only.
+  Old scenes that set `min_iter` for the Stiff-GIPC Kmin role should set
+  `K_min` instead.

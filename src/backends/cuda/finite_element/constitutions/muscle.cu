@@ -3,6 +3,7 @@
 #include <finite_element/fem_3d_extra_constitution.h>
 #include <finite_element/fem_exporter.h>
 #include <finite_element/fem_utils.h>
+#include <cuda_tool/cuda_tool.h>
 #include <Eigen/Dense>
 #include <utils/make_spd.h>
 #include <utils/matrix_assembler.h>
@@ -65,105 +66,146 @@ void Muscle::do_init(FiniteElementExtraConstitution::FilteredInfo& info)
     directions.view().copy_from(h_directions.data());
 }
 
+namespace
+{
+    constexpr SizeT StencilSize     = 4;
+    constexpr SizeT HalfHessianSize = StencilSize * (StencilSize + 1) / 2;
+
+    __global__ void Muscle_do_compute_energy_kernel(
+        cuda_tool::CBufferView<Float>     passive_coeffs,
+        cuda_tool::CBufferView<Float>     active_coeffs,
+        cuda_tool::CBufferView<Vector3>   directions,
+        cuda_tool::BufferView<Float>      energies,
+        cuda_tool::CBufferView<Vector4i>  indices,
+        cuda_tool::CBufferView<Vector3>   xs,
+        cuda_tool::CBufferView<Matrix3x3> Dm_invs,
+        cuda_tool::CBufferView<Float>     volumes,
+        Float                             dt,
+        int                               n)
+    {
+        int I = blockIdx.x * blockDim.x + threadIdx.x;
+        if(I >= n)
+            return;
+        const Vector4i&  tet        = indices(I);
+        const Matrix3x3& Dm_inv     = Dm_invs(I);
+        Float            mu_passive = passive_coeffs(I);
+        Float            mu_active  = active_coeffs(I);
+        Vector3          direction  = directions(I);
+
+        const Vector3& x0 = xs(tet(0));
+        const Vector3& x1 = xs(tet(1));
+        const Vector3& x2 = xs(tet(2));
+        const Vector3& x3 = xs(tet(3));
+
+        auto F = fem::F(x0, x1, x2, x3, Dm_inv);
+
+        Float E_passive, E_active;
+
+        muscle_passive::E(E_passive, mu_passive, direction, F);
+        muscle_active::E(E_active, mu_active, direction, F);
+
+        energies(I) = (E_passive + E_active) * dt * dt * volumes(I);
+    }
+
+    __global__ void Muscle_do_compute_gradient_hessian_kernel(
+        cuda_tool::CBufferView<Float>           passive_coeffs,
+        cuda_tool::CBufferView<Float>           active_coeffs,
+        cuda_tool::CBufferView<Vector3>         directions,
+        cuda_tool::CBufferView<Vector4i>        indices,
+        cuda_tool::CBufferView<Vector3>         xs,
+        cuda_tool::CBufferView<Matrix3x3>       Dm_invs,
+        cuda_tool::DoubletVectorView<Float, 3>  G3s,
+        cuda_tool::TripletMatrixView<Float, 3>   H3x3s,
+        cuda_tool::CBufferView<Float>            volumes,
+        Float                                    dt,
+        bool                                     gradient_only,
+        int                                      n)
+    {
+        int I = blockIdx.x * blockDim.x + threadIdx.x;
+        if(I >= n)
+            return;
+        const Vector4i&  tet        = indices(I);
+        const Matrix3x3& Dm_inv     = Dm_invs(I);
+        Float            mu_passive = passive_coeffs(I);
+        Float            mu_active  = active_coeffs(I);
+        Vector3          direction  = directions(I);
+
+        const Vector3& x0 = xs(tet(0));
+        const Vector3& x1 = xs(tet(1));
+        const Vector3& x2 = xs(tet(2));
+        const Vector3& x3 = xs(tet(3));
+
+        auto F = fem::F(x0, x1, x2, x3, Dm_inv);
+
+        auto Vdt2 = volumes(I) * dt * dt;
+
+        Matrix3x3 dEdF_passive, dEdF_active;
+        muscle_passive::dEdVecF(dEdF_passive, mu_passive, direction, F);
+        muscle_active::dEdVecF(dEdF_active, mu_active, direction, F);
+        auto VecdEdF = flatten(dEdF_passive + dEdF_active);
+        VecdEdF *= Vdt2;
+
+        Matrix9x12 dFdx = fem::dFdx(Dm_inv);
+        Vector12   G    = dFdx.transpose() * VecdEdF;
+
+        DoubletVectorAssembler DVA{G3s};
+        DVA.segment<StencilSize>(I * StencilSize).write(tet, G);
+
+        if(gradient_only)
+            return;
+
+        Matrix9x9 ddEddF_passive, ddEddF_active;
+        muscle_passive::ddEddVecF(ddEddF_passive, mu_passive, direction, F);
+        muscle_active::ddEddVecF(ddEddF_active, mu_active, direction, F);
+        Matrix9x9 ddEddF = ddEddF_passive + ddEddF_active;
+        make_spd(ddEddF);
+        ddEddF *= Vdt2;
+        Matrix12x12            H = dFdx.transpose() * ddEddF * dFdx;
+        TripletMatrixAssembler TMA{H3x3s};
+        TMA.half_block<StencilSize>(I * HalfHessianSize).write(tet, H);
+    }
+}  // namespace
+
 void Muscle::do_compute_energy(FEM3DExtraConstitution::ComputeEnergyInfo& info)
 {
-    using namespace muda;
-
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(info.indices().size(),
-               [passive_coeffs = passive_coeffs.cviewer().name("passive_coeffs"),
-                active_coeffs = active_coeffs.cviewer().name("active_coeffs"),
-                directions    = directions.cviewer().name("directions"),
-                energies      = info.energies().viewer().name("energies"),
-                indices       = info.indices().viewer().name("indices"),
-                xs            = info.xs().viewer().name("xs"),
-                Dm_invs       = info.Dm_invs().viewer().name("Dm_invs"),
-                volumes       = info.rest_volumes().viewer().name("volumes"),
-                dt            = info.dt()] __device__(int I)
-               {
-                   const Vector4i&  tet        = indices(I);
-                   const Matrix3x3& Dm_inv     = Dm_invs(I);
-                   Float            mu_passive = passive_coeffs(I);
-                   Float            mu_active  = active_coeffs(I);
-                   Vector3          direction  = directions(I);
-
-                   const Vector3& x0 = xs(tet(0));
-                   const Vector3& x1 = xs(tet(1));
-                   const Vector3& x2 = xs(tet(2));
-                   const Vector3& x3 = xs(tet(3));
-
-                   auto F = fem::F(x0, x1, x2, x3, Dm_inv);
-
-                   Float E_passive, E_active;
-
-                   muscle_passive::E(E_passive, mu_passive, direction, F);
-                   muscle_active::E(E_active, mu_active, direction, F);
-
-                   energies(I) = (E_passive + E_active) * dt * dt * volumes(I);
-               });
+    auto k = Muscle_do_compute_energy_kernel;
+    int  n = (int)info.indices().size();
+    if(n > 0)
+    {
+        k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+            passive_coeffs.cview(),
+            active_coeffs.cview(),
+            directions.cview(),
+            info.energies(),
+            info.indices(),
+            info.xs(),
+            info.Dm_invs(),
+            info.rest_volumes(),
+            info.dt(),
+            n);
+    }
 }
 
 void Muscle::do_compute_gradient_hessian(FEM3DExtraConstitution::ComputeGradientHessianInfo& info)
 {
-    using namespace muda;
-    auto gradient_only = info.gradient_only();
-
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(info.indices().size(),
-               [passive_coeffs = passive_coeffs.cviewer().name("passive_coeffs"),
-                active_coeffs = active_coeffs.cviewer().name("active_coeffs"),
-                directions    = directions.cviewer().name("directions"),
-                indices       = info.indices().viewer().name("indices"),
-                xs            = info.xs().viewer().name("xs"),
-                Dm_invs       = info.Dm_invs().viewer().name("Dm_invs"),
-                G3s           = info.gradients().viewer().name("gradients"),
-                H3x3s         = info.hessians().viewer().name("hessians"),
-                volumes       = info.rest_volumes().viewer().name("volumes"),
-                dt            = info.dt(),
-                gradient_only] __device__(int I) mutable
-               {
-                   const Vector4i&  tet        = indices(I);
-                   const Matrix3x3& Dm_inv     = Dm_invs(I);
-                   Float            mu_passive = passive_coeffs(I);
-                   Float            mu_active  = active_coeffs(I);
-                   Vector3          direction  = directions(I);
-
-                   const Vector3& x0 = xs(tet(0));
-                   const Vector3& x1 = xs(tet(1));
-                   const Vector3& x2 = xs(tet(2));
-                   const Vector3& x3 = xs(tet(3));
-
-                   auto F = fem::F(x0, x1, x2, x3, Dm_inv);
-
-                   auto Vdt2 = volumes(I) * dt * dt;
-
-                   Matrix3x3 dEdF_passive, dEdF_active;
-                   muscle_passive::dEdVecF(dEdF_passive, mu_passive, direction, F);
-                   muscle_active::dEdVecF(dEdF_active, mu_active, direction, F);
-                   auto VecdEdF = flatten(dEdF_passive + dEdF_active);
-                   VecdEdF *= Vdt2;
-
-                   Matrix9x12 dFdx = fem::dFdx(Dm_inv);
-                   Vector12   G    = dFdx.transpose() * VecdEdF;
-
-                   DoubletVectorAssembler DVA{G3s};
-                   DVA.segment<StencilSize>(I * StencilSize).write(tet, G);
-
-                   if(gradient_only)
-                       return;
-
-                   Matrix9x9 ddEddF_passive, ddEddF_active;
-                   muscle_passive::ddEddVecF(ddEddF_passive, mu_passive, direction, F);
-                   muscle_active::ddEddVecF(ddEddF_active, mu_active, direction, F);
-                   Matrix9x9 ddEddF = ddEddF_passive + ddEddF_active;
-                   make_spd(ddEddF);
-                   ddEddF *= Vdt2;
-                   Matrix12x12            H = dFdx.transpose() * ddEddF * dFdx;
-                   TripletMatrixAssembler TMA{H3x3s};
-                   TMA.half_block<StencilSize>(I * HalfHessianSize).write(tet, H);
-               });
+    auto k = Muscle_do_compute_gradient_hessian_kernel;
+    int  n = (int)info.indices().size();
+    if(n > 0)
+    {
+        k<<<cuda_tool::best_grid_dim(n, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+            passive_coeffs.cview(),
+            active_coeffs.cview(),
+            directions.cview(),
+            info.indices(),
+            info.xs(),
+            info.Dm_invs(),
+            info.gradients(),
+            info.hessians(),
+            info.rest_volumes(),
+            info.dt(),
+            info.gradient_only(),
+            n);
+    }
 }
 
 REGISTER_SIM_SYSTEM(Muscle);

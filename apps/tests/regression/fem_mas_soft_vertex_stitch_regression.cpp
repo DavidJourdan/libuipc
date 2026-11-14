@@ -26,6 +26,7 @@ TEST_CASE("fem_mas_soft_vertex_stitch_regression", "[fem][mas][stitch][regressio
     config["contact"]["d_hat"]              = 0.002;
     config["line_search"]["max_iter"]       = 8;
     config["linear_system"]["tol_rate"]     = 1e-3;
+    config["linear_system"]["fem_preconditioner"] = "mas";
     test::Scene::dump_config(config, output_path);
 
     Scene scene{config};
@@ -49,16 +50,14 @@ TEST_CASE("fem_mas_soft_vertex_stitch_regression", "[fem][mas][stitch][regressio
 
     label_surface(cloth_a);
     label_surface(cloth_b);
-    mesh_partition(cloth_a, 16);
-    mesh_partition(cloth_b, 16);
 
     NeoHookeanShell      nhs;
     DiscreteShellBending dsb;
     auto moduli = ElasticModuli2D::youngs_poisson(1.0_MPa, 0.49);
     nhs.apply_to(cloth_a, moduli);
     nhs.apply_to(cloth_b, moduli);
-    dsb.apply_to(cloth_a, 10.0);
-    dsb.apply_to(cloth_b, 10.0);
+    dsb.apply_to(cloth_a, 1.0_MPa, 0.49);
+    dsb.apply_to(cloth_b, 1.0_MPa, 0.49);
     default_element.apply_to(cloth_a);
     default_element.apply_to(cloth_b);
 
@@ -66,15 +65,15 @@ TEST_CASE("fem_mas_soft_vertex_stitch_regression", "[fem][mas][stitch][regressio
     auto [slot_b, _rest_b] = cloth_obj->geometries().create(cloth_b);
 
     vector<Vector2i> stitch_pairs;
-    auto             n =
-        std::min<SizeT>(256, std::min(cloth_a.positions().size(), cloth_b.positions().size()));
+    auto             n = std::min<SizeT>(
+        256, std::min(cloth_a.positions().size(), cloth_b.positions().size()));
     stitch_pairs.reserve(n);
     for(SizeT i = 0; i < n; ++i)
         stitch_pairs.push_back(Vector2i{static_cast<IndexT>(i), static_cast<IndexT>(i)});
 
     SoftVertexStitch svs;
-    auto             stitch_geo = svs.create_geometry({slot_a, slot_b}, stitch_pairs, 1000.0, 0.0);
-    auto             stitch_obj = scene.objects().create("stitch");
+    auto stitch_geo = svs.create_geometry({slot_a, slot_b}, stitch_pairs, 1000.0, 0.0);
+    auto stitch_obj = scene.objects().create("stitch");
     stitch_obj->geometries().create(stitch_geo);
 
     world.init(scene);
@@ -88,6 +87,7 @@ TEST_CASE("fem_mas_soft_vertex_stitch_regression", "[fem][mas][stitch][regressio
         world.advance();
         REQUIRE(world.is_valid());
         world.retrieve();
-        sio.write_surface(fmt::format("{}scene_surface{}.obj", output_path, world.frame()));
+        sio.write_surface(
+            fmt::format("{}scene_surface{}.obj", output_path, world.frame()));
     }
 }

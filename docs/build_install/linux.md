@@ -2,6 +2,11 @@
 
 ## Prerequisites
 
+Direct CMake builds automatically install missing Python modules into the selected
+interpreter and reuse modules that already import successfully. For root pip/uv
+builds, including `--no-build-isolation` setup, see
+[Python build environments](./dev_in_uv.md).
+
 The following dependencies are required to build the project.
 
 | Name                                                | Version      | Usage           | Import         |
@@ -69,6 +74,10 @@ cd libuipc; mkdir build; cd build
 cmake -S .. -DUIPC_BUILD_PYBIND=1 -DCMAKE_BUILD_TYPE=<Release/RelWithDebInfo> 
 cmake --build . -j8
 ```
+
+The default CUDA build retains the V0, stackless, and linear-BVH comparison
+filters. Add `-DUIPC_WITH_CUDA_LEGACY_COLLISION=OFF` to the configure command
+for a lean build containing only the default broad-phase trajectory filter.
 
 !!!NOTE
     Use multi-thread to speed up the build process as possible, becasue the NVCC compiler will take a lot of time.

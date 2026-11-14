@@ -1,6 +1,7 @@
 #include <app/app.h>
 #include <uipc/uipc.h>
 #include <uipc/constitution/neo_hookean_shell.h>
+#include <uipc/constitution/discrete_shell_bending.h>
 #include <uipc/constitution/strain_plastic_discrete_shell_bending.h>
 #include <uipc/constitution/soft_position_constraint.h>
 #include <algorithm>
@@ -14,11 +15,11 @@ using namespace uipc::core;
 using namespace uipc::geometry;
 using namespace uipc::constitution;
 
-constexpr SizeT EndFrame     = 60;
-constexpr SizeT RecoverFrame = 40;
-constexpr std::size_t DumpMagic = 0xc2663291fdf3;
-constexpr SizeT SheetResolution = 21;
-constexpr Float SheetSize       = 1.0;
+constexpr SizeT       EndFrame        = 60;
+constexpr SizeT       RecoverFrame    = 40;
+constexpr std::size_t DumpMagic       = 0xc2663291fdf3;
+constexpr SizeT       SheetResolution = 21;
+constexpr Float       SheetSize       = 1.0;
 
 struct SimulationResult
 {
@@ -30,16 +31,16 @@ struct ClothPatch
 {
     SimplicialComplex mesh;
     vector<Vector3>   rest_positions;
-    SizeT             v00 = 0;
-    SizeT             v10 = 0;
-    SizeT             v11 = 0;
-    SizeT             v01 = 0;
+    SizeT             v00       = 0;
+    SizeT             v10       = 0;
+    SizeT             v11       = 0;
+    SizeT             v01       = 0;
     Float             cell_span = 0.0;
 };
 
 ClothPatch load_center_patch()
 {
-    vector<Vector3> Vs;
+    vector<Vector3>  Vs;
     vector<Vector3i> Fs;
     Vs.reserve(SheetResolution * SheetResolution);
     Fs.reserve((SheetResolution - 1) * (SheetResolution - 1) * 2);
@@ -80,27 +81,22 @@ ClothPatch load_center_patch()
     const SizeT v01    = v00 + SheetResolution;
     const SizeT v11    = v01 + 1;
 
-    return ClothPatch{std::move(mesh),
-                      std::move(Vs),
-                      v00,
-                      v10,
-                      v11,
-                      v01,
-                      step};
+    return ClothPatch{std::move(mesh), std::move(Vs), v00, v10, v11, v01, step};
 }
 
 S<geometry::GeometrySlot> build_scene(Scene& scene)
 {
-    NeoHookeanShell             nhs;
+    NeoHookeanShell                   nhs;
     StrainPlasticDiscreteShellBending pdsb;
-    SoftPositionConstraint      spc;
+    SoftPositionConstraint            spc;
 
     auto object = scene.objects().create("strip");
     auto patch  = load_center_patch();
 
     auto moduli = ElasticModuli2D::youngs_poisson(10.0_MPa, 0.49);
     nhs.apply_to(patch.mesh, moduli);
-    pdsb.apply_to(patch.mesh, 5.0_kPa, 0.02, 0.0);
+    const Float kappa = DiscreteShellBending::bending_stiffness(10.0_MPa, 0.49, 0.001_m);
+    pdsb.apply_to(patch.mesh, kappa, 0.02, 0.0);
     spc.apply_to(patch.mesh, 100.0);
 
     auto [slot, rest_slot] = object->geometries().create(patch.mesh);
@@ -109,8 +105,8 @@ S<geometry::GeometrySlot> build_scene(Scene& scene)
     scene.animator().insert(
         *object,
         [rest_positions = std::move(patch.rest_positions),
-         moving_vertex = patch.v01,
-         amplitude     = 4.0 * patch.cell_span](Animation::UpdateInfo& info)
+         moving_vertex  = patch.v01,
+         amplitude      = 4.0 * patch.cell_span](Animation::UpdateInfo& info)
         {
             auto geo = info.geo_slots()[0]->geometry().as<SimplicialComplex>();
 
@@ -120,7 +116,9 @@ S<geometry::GeometrySlot> build_scene(Scene& scene)
             auto aim_position_view   = view(*aim_position);
 
             std::ranges::fill(is_constrained_view, 1);
-            std::copy(rest_positions.begin(), rest_positions.end(), aim_position_view.begin());
+            std::copy(rest_positions.begin(),
+                      rest_positions.end(),
+                      aim_position_view.begin());
 
             const Float normalized_frame =
                 static_cast<Float>(std::min<SizeT>(info.frame(), EndFrame)) / EndFrame;
@@ -133,28 +131,29 @@ S<geometry::GeometrySlot> build_scene(Scene& scene)
 }
 
 SimulationResult run_case(const std::filesystem::path& workspace,
-                          bool                        dump_frames,
-                          std::optional<SizeT>        recover_frame = std::nullopt)
+                          bool                         dump_frames,
+                          std::optional<SizeT> recover_frame = std::nullopt)
 {
     Engine engine{"cuda", workspace.string()};
     World  world{engine};
 
-    auto config                             = test::Scene::default_config();
-    config["gravity"]                       = Vector3{0, 0, 0};
-    config["contact"]["enable"]             = false;
-    config["line_search"]["max_iter"]       = 8;
-    config["linear_system"]["tol_rate"]     = 1e-3;
-    config["dt"]                            = 0.01;
+    auto config                         = test::Scene::default_config();
+    config["gravity"]                   = Vector3{0, 0, 0};
+    config["contact"]["enable"]         = false;
+    config["line_search"]["max_iter"]   = 8;
+    config["linear_system"]["tol_rate"] = 1e-3;
+    config["dt"]                        = 0.01;
     test::Scene::dump_config(config, workspace.string());
 
-    Scene           scene{config};
-    auto slot = build_scene(scene);
+    Scene scene{config};
+    auto  slot = build_scene(scene);
 
     world.init(scene);
     REQUIRE(world.is_valid());
 
     SceneIO sio{scene};
-    sio.write_surface(fmt::format("{}scene_surface{}.obj", workspace.string(), world.frame()));
+    sio.write_surface(
+        fmt::format("{}scene_surface{}.obj", workspace.string(), world.frame()));
 
     SimulationResult result;
     if(recover_frame)
@@ -165,7 +164,8 @@ SimulationResult run_case(const std::filesystem::path& workspace,
 
         REQUIRE(world.frame() == *recover_frame);
         world.retrieve();
-        sio.write_surface(fmt::format("{}scene_surface{}.obj", workspace.string(), world.frame()));
+        sio.write_surface(
+            fmt::format("{}scene_surface{}.obj", workspace.string(), world.frame()));
     }
 
     while(world.frame() < EndFrame)
@@ -173,12 +173,13 @@ SimulationResult run_case(const std::filesystem::path& workspace,
         world.advance();
         REQUIRE(world.is_valid());
         world.retrieve();
-        sio.write_surface(fmt::format("{}scene_surface{}.obj", workspace.string(), world.frame()));
+        sio.write_surface(
+            fmt::format("{}scene_surface{}.obj", workspace.string(), world.frame()));
         if(dump_frames)
             world.dump();
     }
 
-    auto sc = slot->geometry().as<SimplicialComplex>();
+    auto       sc            = slot->geometry().as<SimplicialComplex>();
     const auto position_view = view(sc->positions());
     result.final_positions.assign(position_view.begin(), position_view.end());
     return result;
@@ -216,8 +217,6 @@ TEST_CASE("84_strain_plastic_discrete_shell_bending_recover", "[fem][strain_plas
 
         REQUIRE(resumed.recover_result);
         REQUIRE(baseline.final_positions.size() == resumed.final_positions.size());
-        CHECK(max_position_diff(baseline.final_positions, resumed.final_positions)
-              < 1e-6);
+        CHECK(max_position_diff(baseline.final_positions, resumed.final_positions) < 1e-6);
     }
-
 }

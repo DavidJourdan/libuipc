@@ -9,9 +9,637 @@
 #include <pipeline/al_ipc_pipeline_flag.h>
 #include <uipc/common/log.h>
 #include <implicit_geometry/half_plane_vertex_reporter.h>
+#include <active_set_system/al_active_set_math.h>
+#include <cuda_tool/cub.h>
 
 namespace uipc::backend::cuda
 {
+namespace
+{
+    __global__ void filter_active_kernel(cuda_tool::BufferView<int> cnt, int large_cnt, int n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(cnt(i) >= 1)
+            cnt(i) = large_cnt;
+    }
+
+    __device__ uint64_t active_pair_key(const Vector2i& pair)
+    {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(pair(0))) << 32)
+               | static_cast<uint32_t>(pair(1));
+    }
+
+    __device__ bool contains_active_pair(cuda_tool::CBufferView<Vector2i> active_pairs,
+                                         const Vector2i& candidate)
+    {
+        const uint64_t key   = active_pair_key(candidate);
+        size_t         first = 0;
+        size_t         last  = active_pairs.size();
+        while(first < last)
+        {
+            const size_t middle     = first + (last - first) / 2;
+            const auto   middle_key = active_pair_key(active_pairs(middle));
+            if(middle_key < key)
+                first = middle + 1;
+            else
+                last = middle;
+        }
+        return first < active_pairs.size() && active_pair_key(active_pairs(first)) == key;
+    }
+
+    __global__ void init_vertex_min_candidate_toi_kernel(cuda_tool::BufferView<Float> tois, int n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        tois(i) = 2.0;
+    }
+
+    __global__ void accumulate_PH_vertex_min_candidate_toi_kernel(
+        cuda_tool::CBufferView<Vector2i> candidates,
+        cuda_tool::CBufferView<Float>    candidate_tois,
+        cuda_tool::CBufferView<Vector2i> active_pairs,
+        cuda_tool::BufferView<Float>     vertex_min_tois,
+        int                              n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        const Float toi = candidate_tois(i);
+        if(!details::al_candidate_has_collision(toi))
+            return;
+        const Vector2i pair = candidates(i);
+        if(contains_active_pair(active_pairs, pair))
+            return;
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(pair(0)), toi);
+    }
+
+    __global__ void accumulate_PT_vertex_min_candidate_toi_kernel(
+        cuda_tool::CBufferView<Vector2i> candidates,
+        cuda_tool::CBufferView<Float>    candidate_tois,
+        cuda_tool::CBufferView<Vector2i> active_pairs,
+        cuda_tool::CBufferView<IndexT>   surface_vertices,
+        cuda_tool::CBufferView<Vector3i> surface_triangles,
+        cuda_tool::BufferView<Float>     vertex_min_tois,
+        int                              n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        const Float toi = candidate_tois(i);
+        if(!details::al_candidate_has_collision(toi))
+            return;
+        const Vector2i pair = candidates(i);
+        if(contains_active_pair(active_pairs, pair))
+            return;
+
+        const Vector3i tri = surface_triangles(pair(1));
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(surface_vertices(pair(0))), toi);
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(tri(0)), toi);
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(tri(1)), toi);
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(tri(2)), toi);
+    }
+
+    __global__ void accumulate_EE_vertex_min_candidate_toi_kernel(
+        cuda_tool::CBufferView<Vector2i> candidates,
+        cuda_tool::CBufferView<Float>    candidate_tois,
+        cuda_tool::CBufferView<Vector2i> active_pairs,
+        cuda_tool::CBufferView<Vector2i> surface_edges,
+        cuda_tool::BufferView<Float>     vertex_min_tois,
+        int                              n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        const Float toi = candidate_tois(i);
+        if(!details::al_candidate_has_collision(toi))
+            return;
+        const Vector2i pair = candidates(i);
+        if(contains_active_pair(active_pairs, pair))
+            return;
+
+        const Vector2i lhs = surface_edges(pair(0));
+        const Vector2i rhs = surface_edges(pair(1));
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(lhs(0)), toi);
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(lhs(1)), toi);
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(rhs(0)), toi);
+        details::al_atomic_min_candidate_toi(&vertex_min_tois(rhs(1)), toi);
+    }
+
+    __global__ void gather_PH_max_vertex_min_candidate_toi_kernel(
+        cuda_tool::CBufferView<Vector2i> candidates,
+        cuda_tool::CBufferView<Float>    candidate_tois,
+        cuda_tool::CBufferView<Float>    vertex_min_tois,
+        cuda_tool::BufferView<Float>     candidate_max_tois,
+        int                              n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(!details::al_candidate_has_collision(candidate_tois(i)))
+        {
+            candidate_max_tois(i) = -1.0;
+            return;
+        }
+        candidate_max_tois(i) = vertex_min_tois(candidates(i)(0));
+    }
+
+    __global__ void gather_PT_max_vertex_min_candidate_toi_kernel(
+        cuda_tool::CBufferView<Vector2i> candidates,
+        cuda_tool::CBufferView<Float>    candidate_tois,
+        cuda_tool::CBufferView<IndexT>   surface_vertices,
+        cuda_tool::CBufferView<Vector3i> surface_triangles,
+        cuda_tool::CBufferView<Float>    vertex_min_tois,
+        cuda_tool::BufferView<Float>     candidate_max_tois,
+        int                              n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(!details::al_candidate_has_collision(candidate_tois(i)))
+        {
+            candidate_max_tois(i) = -1.0;
+            return;
+        }
+        const Vector2i pair   = candidates(i);
+        const Vector3i tri    = surface_triangles(pair(1));
+        Float          value  = vertex_min_tois(surface_vertices(pair(0)));
+        value                 = max(value, vertex_min_tois(tri(0)));
+        value                 = max(value, vertex_min_tois(tri(1)));
+        value                 = max(value, vertex_min_tois(tri(2)));
+        candidate_max_tois(i) = value;
+    }
+
+    __global__ void gather_EE_max_vertex_min_candidate_toi_kernel(
+        cuda_tool::CBufferView<Vector2i> candidates,
+        cuda_tool::CBufferView<Float>    candidate_tois,
+        cuda_tool::CBufferView<Vector2i> surface_edges,
+        cuda_tool::CBufferView<Float>    vertex_min_tois,
+        cuda_tool::BufferView<Float>     candidate_max_tois,
+        int                              n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(!details::al_candidate_has_collision(candidate_tois(i)))
+        {
+            candidate_max_tois(i) = -1.0;
+            return;
+        }
+        const Vector2i pair = candidates(i);
+        const Vector2i lhs  = surface_edges(pair(0));
+        const Vector2i rhs  = surface_edges(pair(1));
+        Float value = max(vertex_min_tois(lhs(0)), vertex_min_tois(lhs(1)));
+        value       = max(value, vertex_min_tois(rhs(0)));
+        value       = max(value, vertex_min_tois(rhs(1)));
+        candidate_max_tois(i) = value;
+    }
+
+    __global__ void update_active_set_k1_kernel(size_t N0,
+                                                cuda_tool::CBufferView<Vector2i> idx0,
+                                                cuda_tool::CBufferView<Vector2i> idx1,
+                                                cuda_tool::CBufferView<Float> tois,
+                                                cuda_tool::CBufferView<Float> candidate_max_vertex_min_toi,
+                                                cuda_tool::CBufferView<int> cnt,
+                                                cuda_tool::BufferView<int64_t> ij_hash,
+                                                cuda_tool::BufferView<int> sort_idx,
+                                                int inactive_count_limit,
+                                                int n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(i < N0 && cnt(i) <= inactive_count_limit)
+        {
+            ij_hash(i) = (static_cast<int64_t>(idx0(i)(0)) << 32)
+                         + static_cast<int64_t>(idx0(i)(1));
+        }
+        else if(i >= N0 && !contains_active_pair(idx0, idx1(i - N0))
+                && details::al_keep_new_candidate(tois(i - N0),
+                                                  candidate_max_vertex_min_toi(i - N0)))
+        {
+            ij_hash(i) = (static_cast<int64_t>(idx1(i - N0)(0)) << 32)
+                         + static_cast<int64_t>(idx1(i - N0)(1));
+        }
+        else
+        {
+            ij_hash(i) = -1;
+        }
+        sort_idx(i) = i;
+    }
+
+    __global__ void update_active_set_k2_kernel(cuda_tool::CBufferView<int64_t> ij_hash,
+                                                cuda_tool::BufferView<int> flag,
+                                                int                        n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(i >= 1 && ij_hash(i) == ij_hash(i - 1) && ij_hash(i) >= 0)
+        {
+            flag(i) = 0;
+        }
+        else
+        {
+            flag(i) = ij_hash(i) >= 0 ? 1 : 0;
+        }
+    }
+
+    __global__ void update_active_set_k3_kernel(size_t N,
+                                                size_t N0,
+                                                cuda_tool::CBufferView<int> flag,
+                                                cuda_tool::CBufferView<int> offset,
+                                                cuda_tool::CBufferView<int> sort_idx,
+                                                cuda_tool::CBufferView<Vector2i> tmp_idx,
+                                                cuda_tool::CBufferView<Float> tmp_lambda,
+                                                cuda_tool::CBufferView<int> tmp_cnt,
+                                                cuda_tool::CBufferView<Vector2i> idx1,
+                                                cuda_tool::BufferView<Vector2i> new_idx,
+                                                cuda_tool::BufferView<Float> new_lambda,
+                                                cuda_tool::BufferView<int> new_cnt,
+                                                cuda_tool::Dense<int> total_count,
+                                                int n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        if(flag(i))
+        {
+            auto idx = sort_idx(i);
+            auto j   = offset(i);
+            if(idx < N0)
+            {
+                new_idx(j)    = tmp_idx(idx);
+                new_lambda(j) = tmp_lambda(idx);
+                new_cnt(j)    = tmp_cnt(idx);
+            }
+            else
+            {
+                new_idx(j)    = idx1(idx - N0);
+                new_lambda(j) = 0.0;
+                new_cnt(j)    = 0;
+            }
+        }
+        if(i == N - 1)
+        {
+            total_count = flag(i) + offset(i);
+        }
+    }
+
+    __global__ void linearize_constraints_k1_kernel(
+        cuda_tool::CBufferView<Float>    thicknesses,
+        cuda_tool::CBufferView<Float>    d_hats,
+        cuda_tool::CBufferView<Vector2i> PH_idx,
+        cuda_tool::CBufferView<Vector3>  x,
+        cuda_tool::CBufferView<Vector3>  plane_positions,
+        cuda_tool::CBufferView<Vector3>  plane_normals,
+        cuda_tool::BufferView<int>       PHs,
+        cuda_tool::BufferView<Float>     d0,
+        cuda_tool::BufferView<Vector3>   d_grad,
+        int                              n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        int vI = PH_idx(idx)[0], hI = PH_idx(idx)[1];
+
+        PHs(idx) = vI;
+
+        const auto& P  = x(vI);
+        const auto& hP = plane_positions(hI);
+        const auto& hN = plane_normals(hI);
+
+        Float thickness = thicknesses(vI);
+        Float d_hat     = d_hats(vI);
+
+        Float D;
+        HalfPlaneD(D, P, hP, hN);
+        D = sqrt(D);
+
+        Vector3 GradD = hN;
+        d_grad(idx)   = GradD;
+
+        D -= GradD.dot(P);
+
+        d0(idx) = D - thickness - d_hat;
+    }
+
+    __global__ void linearize_constraints_k2_kernel(
+        cuda_tool::CBufferView<Float>    thicknesses,
+        cuda_tool::CBufferView<Float>    d_hats,
+        cuda_tool::CBufferView<Vector2i> PT_idx,
+        cuda_tool::CBufferView<IndexT>   vs,
+        cuda_tool::CBufferView<Vector3i> tris,
+        cuda_tool::CBufferView<Vector3>  x,
+        cuda_tool::BufferView<Vector4i>  PTs,
+        cuda_tool::BufferView<Float>     d0,
+        cuda_tool::BufferView<Vector12>  d_grad,
+        int                              n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        Vector3i tri = tris(PT_idx(idx)[1]);
+        Vector4i PT(vs(PT_idx(idx)[0]), tri[0], tri[1], tri[2]);
+
+        PTs(idx) = PT;
+
+        const auto& P  = x(PT(0));
+        const auto& T0 = x(PT(1));
+        const auto& T1 = x(PT(2));
+        const auto& T2 = x(PT(3));
+
+        Float thickness = PT_thickness(thicknesses(PT(0)),
+                                       thicknesses(PT(1)),
+                                       thicknesses(PT(2)),
+                                       thicknesses(PT(3)));
+
+        Float d_hat =
+            PT_d_hat(d_hats(PT(0)), d_hats(PT(1)), d_hats(PT(2)), d_hats(PT(3)));
+
+        Vector4i flag = distance::point_triangle_distance_flag(P, T0, T1, T2);
+
+        Float D;
+        distance::point_triangle_distance2(flag, P, T0, T1, T2, D);
+        D = sqrt(D);
+
+        Vector12 GradD;
+        distance::point_triangle_distance2_gradient(flag, P, T0, T1, T2, GradD);
+        GradD /= 2 * D;
+        d_grad(idx) = GradD;
+
+        D -= GradD.segment<3>(0).dot(P);
+        D -= GradD.segment<3>(3).dot(T0);
+        D -= GradD.segment<3>(6).dot(T1);
+        D -= GradD.segment<3>(9).dot(T2);
+
+        d0(idx) = D - thickness - d_hat;
+    }
+
+    __global__ void linearize_constraints_k3_kernel(
+        cuda_tool::CBufferView<Float>    thicknesses,
+        cuda_tool::CBufferView<Float>    d_hats,
+        cuda_tool::CBufferView<Vector2i> EE_idx,
+        cuda_tool::CBufferView<Vector2i> edges,
+        cuda_tool::CBufferView<Vector3>  x,
+        cuda_tool::BufferView<Vector4i>  EEs,
+        cuda_tool::BufferView<Float>     d0,
+        cuda_tool::BufferView<Vector12>  d_grad,
+        cuda_tool::BufferView<Float>     lambda,
+        cuda_tool::BufferView<int>       cnt,
+        int                              large_cnt,
+        int                              n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        Vector2i e0 = edges(EE_idx(idx)[0]), e1 = edges(EE_idx(idx)[1]);
+        Vector4i EE(e0[0], e0[1], e1[0], e1[1]);
+
+        EEs(idx) = EE;
+
+        const auto& E0 = x(EE(0));
+        const auto& E1 = x(EE(1));
+        const auto& E2 = x(EE(2));
+        const auto& E3 = x(EE(3));
+
+        Float eps_x;
+        distance::edge_edge_mollifier_threshold(
+            E0, E1, E2, E3, distance::EEMollifierDisabledThreshold, eps_x);
+        if(distance::need_mollify(E0, E1, E2, E3, eps_x))
+        {
+            cnt(idx)    = large_cnt;
+            lambda(idx) = 0;
+        }
+
+        Float thickness = EE_thickness(thicknesses(EE(0)),
+                                       thicknesses(EE(1)),
+                                       thicknesses(EE(2)),
+                                       thicknesses(EE(3)));
+
+        Float d_hat =
+            EE_d_hat(d_hats(EE(0)), d_hats(EE(1)), d_hats(EE(2)), d_hats(EE(3)));
+
+        Vector4i flag = distance::edge_edge_distance_flag(E0, E1, E2, E3);
+
+        Float D;
+        distance::edge_edge_distance2(flag, E0, E1, E2, E3, D);
+        D = sqrt(D);
+
+        Vector12 GradD;
+        distance::edge_edge_distance2_gradient(flag, E0, E1, E2, E3, GradD);
+        GradD /= 2 * D;
+        d_grad(idx) = GradD;
+
+        D -= GradD.segment<3>(0).dot(E0);
+        D -= GradD.segment<3>(3).dot(E1);
+        D -= GradD.segment<3>(6).dot(E2);
+        D -= GradD.segment<3>(9).dot(E3);
+
+        d0(idx) = D - thickness - d_hat;
+    }
+
+    __global__ void update_slack_k1_kernel(cuda_tool::CBufferView<Float> mu_vertices,
+                                           cuda_tool::CBufferView<int> PHs,
+                                           cuda_tool::CBufferView<Vector3> x_hat,
+                                           cuda_tool::CBufferView<Vector3> PH_d_grad,
+                                           cuda_tool::CBufferView<Float> PH_lambda,
+                                           cuda_tool::BufferView<Float> d0,
+                                           cuda_tool::BufferView<Float> slack,
+                                           int                          n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        auto PH     = PHs(idx);
+        auto mu     = mu_vertices(PH);
+        auto d_grad = PH_d_grad(idx);
+        auto d = d0(idx), lambda = PH_lambda(idx), d_shift = 0.0;
+        d_shift += d_grad.dot(x_hat(PH));
+        if(d + d_shift - lambda / mu > 0)
+            slack(idx) = d + d_shift - lambda / mu;
+        else
+            slack(idx) = 0;
+        d -= slack(idx) + lambda / mu;
+        d0(idx) = d;
+    }
+
+    __global__ void update_slack_k2_kernel(cuda_tool::CBufferView<Float> mu_vertices,
+                                           cuda_tool::CBufferView<Vector4i> PTs,
+                                           cuda_tool::CBufferView<Vector3> x_hat,
+                                           cuda_tool::CBufferView<Vector12> PT_d_grad,
+                                           cuda_tool::CBufferView<Float> PT_lambda,
+                                           cuda_tool::BufferView<Float> d0,
+                                           cuda_tool::BufferView<Float> slack,
+                                           int                          n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        auto PT     = PTs(idx);
+        auto mu     = min(min(mu_vertices(PT(0)), mu_vertices(PT(1))),
+                      min(mu_vertices(PT(2)), mu_vertices(PT(3))));
+        auto d_grad = PT_d_grad(idx);
+        auto d = d0(idx), lambda = PT_lambda(idx), d_shift = 0.0;
+        d_shift += d_grad.segment<3>(0).dot(x_hat(PT(0)));
+        d_shift += d_grad.segment<3>(3).dot(x_hat(PT(1)));
+        d_shift += d_grad.segment<3>(6).dot(x_hat(PT(2)));
+        d_shift += d_grad.segment<3>(9).dot(x_hat(PT(3)));
+        if(d + d_shift - lambda / mu > 0)
+            slack(idx) = d + d_shift - lambda / mu;
+        else
+            slack(idx) = 0;
+        d -= slack(idx) + lambda / mu;
+        d0(idx) = d;
+    }
+
+    __global__ void update_slack_k3_kernel(cuda_tool::CBufferView<Float> mu_vertices,
+                                           cuda_tool::CBufferView<Vector4i> EEs,
+                                           cuda_tool::CBufferView<Vector3> x_hat,
+                                           cuda_tool::CBufferView<Vector12> EE_d_grad,
+                                           cuda_tool::CBufferView<Float> EE_lambda,
+                                           cuda_tool::BufferView<Float> d0,
+                                           cuda_tool::BufferView<Float> slack,
+                                           int                          n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        auto EE     = EEs(idx);
+        auto mu     = min(min(mu_vertices(EE(0)), mu_vertices(EE(1))),
+                      min(mu_vertices(EE(2)), mu_vertices(EE(3))));
+        auto d_grad = EE_d_grad(idx);
+        auto d = d0(idx), lambda = EE_lambda(idx), d_shift = 0.0;
+        d_shift += d_grad.segment<3>(0).dot(x_hat(EE(0)));
+        d_shift += d_grad.segment<3>(3).dot(x_hat(EE(1)));
+        d_shift += d_grad.segment<3>(6).dot(x_hat(EE(2)));
+        d_shift += d_grad.segment<3>(9).dot(x_hat(EE(3)));
+        if(d + d_shift - lambda / mu > 0)
+            slack(idx) = d + d_shift - lambda / mu;
+        else
+            slack(idx) = 0;
+        d -= slack(idx) + lambda / mu;
+        d0(idx) = d;
+    }
+
+    __global__ void update_lambda_k1_kernel(cuda_tool::CBufferView<Float> mu_vertices,
+                                            cuda_tool::CBufferView<int> PHs,
+                                            cuda_tool::CBufferView<Vector3> x_hat,
+                                            cuda_tool::CBufferView<Vector3> PH_d_grad,
+                                            cuda_tool::CBufferView<Float> d0,
+                                            cuda_tool::CBufferView<Float> slack,
+                                            cuda_tool::BufferView<Float> PH_lambda,
+                                            cuda_tool::BufferView<int> PH_cnt,
+                                            int                        n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        auto  vI     = PHs(idx);
+        auto  mu     = mu_vertices(vI);
+        auto  d_grad = PH_d_grad(idx);
+        auto  d = d0(idx), &lambda = PH_lambda(idx), d_shift = 0.0;
+        auto& cnt = PH_cnt(idx);
+        d_shift += d_grad.dot(x_hat(vI));
+        d += slack(idx) + lambda / mu;
+        if(d + d_shift - lambda / mu > 0)
+        {
+            lambda = 0;
+            ++cnt;
+        }
+        else
+        {
+            lambda -= (d + d_shift) * mu;
+            cnt = 0;
+        }
+    }
+
+    __global__ void update_lambda_k2_kernel(cuda_tool::CBufferView<Float> mu_vertices,
+                                            cuda_tool::CBufferView<Vector4i> PTs,
+                                            cuda_tool::CBufferView<Vector3> x_hat,
+                                            cuda_tool::CBufferView<Vector12> PT_d_grad,
+                                            cuda_tool::CBufferView<Float> d0,
+                                            cuda_tool::CBufferView<Float> slack,
+                                            cuda_tool::BufferView<Float> PT_lambda,
+                                            cuda_tool::BufferView<int> PT_cnt,
+                                            int                        n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        auto  PT     = PTs(idx);
+        auto  mu     = min(min(mu_vertices(PT(0)), mu_vertices(PT(1))),
+                      min(mu_vertices(PT(2)), mu_vertices(PT(3))));
+        auto  d_grad = PT_d_grad(idx);
+        auto  d = d0(idx), &lambda = PT_lambda(idx), d_shift = 0.0;
+        auto& cnt = PT_cnt(idx);
+        d_shift += d_grad.segment<3>(0).dot(x_hat(PT(0)));
+        d_shift += d_grad.segment<3>(3).dot(x_hat(PT(1)));
+        d_shift += d_grad.segment<3>(6).dot(x_hat(PT(2)));
+        d_shift += d_grad.segment<3>(9).dot(x_hat(PT(3)));
+        d += slack(idx) + lambda / mu;
+        if(d + d_shift - lambda / mu > 0)
+        {
+            lambda = 0;
+            ++cnt;
+        }
+        else
+        {
+            lambda -= (d + d_shift) * mu;
+            cnt = 0;
+        }
+    }
+
+    __global__ void update_lambda_k3_kernel(cuda_tool::CBufferView<Float> mu_vertices,
+                                            cuda_tool::CBufferView<Vector4i> EEs,
+                                            cuda_tool::CBufferView<Vector3> x_hat,
+                                            cuda_tool::CBufferView<Vector12> EE_d_grad,
+                                            cuda_tool::CBufferView<Float> d0,
+                                            cuda_tool::CBufferView<Float> slack,
+                                            cuda_tool::BufferView<Float> EE_lambda,
+                                            cuda_tool::BufferView<int> EE_cnt,
+                                            int                        n)
+    {
+        int idx = blockIdx.x * blockDim.x + threadIdx.x;
+        if(idx >= n)
+            return;
+        auto  EE     = EEs(idx);
+        auto  mu     = min(min(mu_vertices(EE(0)), mu_vertices(EE(1))),
+                      min(mu_vertices(EE(2)), mu_vertices(EE(3))));
+        auto  d_grad = EE_d_grad(idx);
+        auto  d = d0(idx), &lambda = EE_lambda(idx), d_shift = 0.0;
+        auto& cnt = EE_cnt(idx);
+        d_shift += d_grad.segment<3>(0).dot(x_hat(EE(0)));
+        d_shift += d_grad.segment<3>(3).dot(x_hat(EE(1)));
+        d_shift += d_grad.segment<3>(6).dot(x_hat(EE(2)));
+        d_shift += d_grad.segment<3>(9).dot(x_hat(EE(3)));
+        d += slack(idx) + lambda / mu;
+        if(d + d_shift - lambda / mu > 0)
+        {
+            lambda = 0;
+            ++cnt;
+        }
+        else
+        {
+            lambda -= (d + d_shift) * mu;
+            cnt = 0;
+        }
+    }
+
+    __global__ void advance_non_penetrate_positions_kernel(cuda_tool::BufferView<Vector3> x,
+                                                           cuda_tool::CBufferView<Vector3> x_hat,
+                                                           Float alpha,
+                                                           int   n)
+    {
+        int i = blockIdx.x * blockDim.x + threadIdx.x;
+        if(i >= n)
+            return;
+        x(i) = x(i) + (x_hat(i) - x(i)) * alpha;
+    }
+}  // namespace
+
 REGISTER_SIM_SYSTEM(GlobalActiveSetManager);
 
 void GlobalActiveSetManager::do_build()
@@ -35,7 +663,7 @@ void GlobalActiveSetManager::do_build()
 
 void GlobalActiveSetManager::Impl::init_mu()
 {
-    mu_vertices.resize(global_vertex_manager->positions().size());
+    loose_resize(mu_vertices, global_vertex_manager->positions().size());
     mu_vertices.view().fill(0.0);
 
     StiffnessEstimateInfo info{this};
@@ -45,34 +673,178 @@ void GlobalActiveSetManager::Impl::init_mu()
     }
 }
 
+void GlobalActiveSetManager::Impl::init_mu_from_scalar(Float mu)
+{
+    UIPC_ASSERT(std::isfinite(mu) && mu > 0.0, "AL penalty must be finite and positive, got {}.", mu);
+    loose_resize(mu_vertices, global_vertex_manager->positions().size());
+    mu_vertices.view().fill(mu);
+}
+
 void GlobalActiveSetManager::Impl::filter_active()
 {
-    using namespace muda;
+    using namespace cuda_tool;
     auto filter = [&](DeviceBuffer<int>& cnt)
     {
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(cnt.size(),
-                   [cnt = cnt.viewer().name("cnt"), large_cnt = 1 << 30] __device__(int i) mutable
-                   {
-                       if(cnt(i) >= 1)
-                           cnt(i) = large_cnt;
-                   });
+        int n = static_cast<int>(cnt.size());
+        if(n > 0)
+            filter_active_kernel<<<cuda_tool::best_grid_dim(n, filter_active_kernel), cuda_tool::best_block_dim(filter_active_kernel), 0, nullptr>>>(
+                cnt.view(), 1 << 30, n);
     };
 
+    filter(PH_cnt);
     filter(PT_cnt);
     filter(EE_cnt);
 }
 
+void GlobalActiveSetManager::Impl::filter_new_candidates()
+{
+    PH_max_vertex_min_toi.resize_discard(0);
+    PT_max_vertex_min_toi.resize_discard(0);
+    EE_max_vertex_min_toi.resize_discard(0);
+
+    const SizeT ph_count =
+        vertex_half_plane_trajectory_filter ?
+            vertex_half_plane_trajectory_filter->candidate_PHs().size() :
+            0;
+    const SizeT pt_count = simplex_trajectory_filter ?
+                               simplex_trajectory_filter->candidate_PTs().size() :
+                               0;
+    const SizeT ee_count = simplex_trajectory_filter ?
+                               simplex_trajectory_filter->candidate_EEs().size() :
+                               0;
+    if(ph_count == 0 && pt_count == 0 && ee_count == 0)
+        return;
+
+    const auto surface_vertices = global_simplicial_surface_manager->surf_vertices();
+    const auto surface_edges = global_simplicial_surface_manager->surf_edges();
+    const auto surface_triangles = global_simplicial_surface_manager->surf_triangles();
+
+    loose_resize(vertex_min_candidate_toi, global_vertex_manager->positions().size());
+    int vertex_count = static_cast<int>(vertex_min_candidate_toi.size());
+    if(vertex_count > 0)
+    {
+        auto k = init_vertex_min_candidate_toi_kernel;
+        k<<<cuda_tool::best_grid_dim(vertex_count, k), cuda_tool::best_block_dim(k), 0, nullptr>>>(
+            vertex_min_candidate_toi.view(), vertex_count);
+    }
+
+    if(vertex_half_plane_trajectory_filter)
+    {
+        const auto candidates = vertex_half_plane_trajectory_filter->candidate_PHs();
+        const auto tois  = vertex_half_plane_trajectory_filter->toi_PHs();
+        const int  count = static_cast<int>(candidates.size());
+        loose_resize(PH_max_vertex_min_toi, candidates.size());
+        if(count > 0)
+        {
+            auto accumulate = accumulate_PH_vertex_min_candidate_toi_kernel;
+            accumulate<<<cuda_tool::best_grid_dim(count, accumulate), cuda_tool::best_block_dim(accumulate), 0, nullptr>>>(
+                candidates, tois, PH_idx.cview(), vertex_min_candidate_toi.view(), count);
+        }
+    }
+
+    if(simplex_trajectory_filter)
+    {
+        {
+            const auto candidates = simplex_trajectory_filter->candidate_PTs();
+            const auto tois       = simplex_trajectory_filter->toi_PTs();
+            const int  count      = static_cast<int>(candidates.size());
+            loose_resize(PT_max_vertex_min_toi, candidates.size());
+            if(count > 0)
+            {
+                auto accumulate = accumulate_PT_vertex_min_candidate_toi_kernel;
+                accumulate<<<cuda_tool::best_grid_dim(count, accumulate), cuda_tool::best_block_dim(accumulate), 0, nullptr>>>(
+                    candidates,
+                    tois,
+                    PT_idx.cview(),
+                    surface_vertices,
+                    surface_triangles,
+                    vertex_min_candidate_toi.view(),
+                    count);
+            }
+        }
+        {
+            const auto candidates = simplex_trajectory_filter->candidate_EEs();
+            const auto tois       = simplex_trajectory_filter->toi_EEs();
+            const int  count      = static_cast<int>(candidates.size());
+            loose_resize(EE_max_vertex_min_toi, candidates.size());
+            if(count > 0)
+            {
+                auto accumulate = accumulate_EE_vertex_min_candidate_toi_kernel;
+                accumulate<<<cuda_tool::best_grid_dim(count, accumulate), cuda_tool::best_block_dim(accumulate), 0, nullptr>>>(
+                    candidates,
+                    tois,
+                    EE_idx.cview(),
+                    surface_edges,
+                    vertex_min_candidate_toi.view(),
+                    count);
+            }
+        }
+    }
+
+    if(vertex_half_plane_trajectory_filter)
+    {
+        const auto candidates = vertex_half_plane_trajectory_filter->candidate_PHs();
+        const int count = static_cast<int>(candidates.size());
+        if(count > 0)
+        {
+            auto gather = gather_PH_max_vertex_min_candidate_toi_kernel;
+            gather<<<cuda_tool::best_grid_dim(count, gather), cuda_tool::best_block_dim(gather), 0, nullptr>>>(
+                candidates,
+                vertex_half_plane_trajectory_filter->toi_PHs(),
+                vertex_min_candidate_toi.cview(),
+                PH_max_vertex_min_toi.view(),
+                count);
+        }
+    }
+
+    if(simplex_trajectory_filter)
+    {
+        {
+            const auto candidates = simplex_trajectory_filter->candidate_PTs();
+            const int  count      = static_cast<int>(candidates.size());
+            if(count > 0)
+            {
+                auto gather = gather_PT_max_vertex_min_candidate_toi_kernel;
+                gather<<<cuda_tool::best_grid_dim(count, gather), cuda_tool::best_block_dim(gather), 0, nullptr>>>(
+                    candidates,
+                    simplex_trajectory_filter->toi_PTs(),
+                    surface_vertices,
+                    surface_triangles,
+                    vertex_min_candidate_toi.cview(),
+                    PT_max_vertex_min_toi.view(),
+                    count);
+            }
+        }
+        {
+            const auto candidates = simplex_trajectory_filter->candidate_EEs();
+            const int  count      = static_cast<int>(candidates.size());
+            if(count > 0)
+            {
+                auto gather = gather_EE_max_vertex_min_candidate_toi_kernel;
+                gather<<<cuda_tool::best_grid_dim(count, gather), cuda_tool::best_block_dim(gather), 0, nullptr>>>(
+                    candidates,
+                    simplex_trajectory_filter->toi_EEs(),
+                    surface_edges,
+                    vertex_min_candidate_toi.cview(),
+                    EE_max_vertex_min_toi.view(),
+                    count);
+            }
+        }
+    }
+}
+
 void GlobalActiveSetManager::Impl::update_active_set()
 {
-    using namespace muda;
+    using namespace cuda_tool;
+
+    filter_new_candidates();
 
     auto merge = [&](DeviceBuffer<Vector2i>&      idx,
                      DeviceBuffer<Float>&         lambda,
                      DeviceBuffer<int>&           cnt,
                      const CBufferView<Vector2i>& new_idx,
-                     const CBufferView<Float>&    tois)
+                     const CBufferView<Float>&    tois,
+                     const CBufferView<Float>&    candidate_max_vertex_min_toi)
     {
         const auto N0 = idx.size(), N = idx.size() + new_idx.size();
         loose_resize(ij_hash_input, N);
@@ -82,59 +854,32 @@ void GlobalActiveSetManager::Impl::update_active_set()
         loose_resize(offset, N);
         loose_resize(unique_flag, N);
 
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(N,
-                   [N0,
-                    idx0      = idx.cviewer().name("idx0"),
-                    idx1      = new_idx.cviewer().name("idx1"),
-                    tois      = tois.cviewer().name("tois"),
-                    cnt       = cnt.cviewer().name("cnt"),
-                    ij_hash   = ij_hash_input.viewer().name("ij_hash"),
-                    sort_idx  = sort_index_input.viewer().name("sort_idx"),
-                    threshold = 25] __device__(int i) mutable
-                   {
-                       if(i < N0 && abs(cnt(i)) <= threshold)
-                       {
-                           ij_hash(i) = (static_cast<int64_t>(idx0(i)(0)) << 32)
-                                        + static_cast<int64_t>(idx0(i)(1));
-                       }
-                       else if(i >= N0 && tois(i - N0) < 1 - 1e-6)
-                       {
-                           ij_hash(i) = (static_cast<int64_t>(idx1(i - N0)(0)) << 32)
-                                        + static_cast<int64_t>(idx1(i - N0)(1));
-                       }
-                       else
-                       {
-                           ij_hash(i) = -1;
-                       }
-                       sort_idx(i) = i;
-                   });
+        int n = static_cast<int>(N);
+        if(n > 0)
+            update_active_set_k1_kernel<<<cuda_tool::best_grid_dim(n, update_active_set_k1_kernel), cuda_tool::best_block_dim(update_active_set_k1_kernel), 0, nullptr>>>(
+                N0,
+                idx.cview(),
+                new_idx,
+                tois,
+                candidate_max_vertex_min_toi,
+                cnt.cview(),
+                ij_hash_input.view(),
+                sort_index_input.view(),
+                inactive_count_limit,
+                n);
 
+        // CUB radix sort is stable. Existing pairs are placed before newly
+        // detected duplicates in the input, so the first key retains lambda
+        // and decay state without a racy cross-thread value rewrite.
         DeviceRadixSort().SortPairs(ij_hash_input.data(),
                                     ij_hash.data(),
                                     sort_index_input.data(),
                                     sort_index.data(),
                                     N);
 
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(N,
-                   [ij_hash = ij_hash.cviewer().name("ij_hash"),
-                    flag    = unique_flag.viewer().name("flag"),
-                    sort_idx = sort_index.viewer().name("sort_idx")] __device__(int i) mutable
-                   {
-                       if(i >= 1 && ij_hash(i) == ij_hash(i - 1) && ij_hash(i) >= 0)
-                       {
-                           flag(i) = 0;
-                           if(sort_idx(i) < sort_idx(i - 1))
-                               sort_idx(i - 1) = sort_idx(i);
-                       }
-                       else
-                       {
-                           flag(i) = ij_hash(i) >= 0 ? 1 : 0;
-                       }
-                   });
+        if(n > 0)
+            update_active_set_k2_kernel<<<cuda_tool::best_grid_dim(n, update_active_set_k2_kernel), cuda_tool::best_block_dim(update_active_set_k2_kernel), 0, nullptr>>>(
+                ij_hash.cview(), unique_flag.view(), n);
 
         DeviceScan().ExclusiveSum(unique_flag.data(), offset.data(), N);
 
@@ -151,45 +896,22 @@ void GlobalActiveSetManager::Impl::update_active_set()
 
         total_count = 0;
 
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(N,
-                   [N,
-                    N0,
-                    flag       = unique_flag.cviewer().name("flag"),
-                    offset     = offset.cviewer().name("offset"),
-                    sort_idx   = sort_index.cviewer().name("sort_idx"),
-                    tmp_idx    = tmp_idx.cviewer().name("tmp_idx"),
-                    tmp_lambda = tmp_lambda.cviewer().name("tmp_lambda"),
-                    tmp_cnt    = tmp_cnt.cviewer().name("tmp_cnt"),
-                    idx1       = new_idx.cviewer().name("new_idx"),
-                    new_idx    = idx.viewer().name("idx"),
-                    new_lambda = lambda.viewer().name("lambda"),
-                    new_cnt    = cnt.viewer().name("cnt"),
-                    total_count = total_count.viewer().name("total_count")] __device__(int i) mutable
-                   {
-                       if(flag(i))
-                       {
-                           auto idx = sort_idx(i);
-                           auto j   = offset(i);
-                           if(idx < N0)
-                           {
-                               new_idx(j)    = tmp_idx(idx);
-                               new_lambda(j) = tmp_lambda(idx);
-                               new_cnt(j)    = tmp_cnt(idx);
-                           }
-                           else
-                           {
-                               new_idx(j)    = idx1(idx - N0);
-                               new_lambda(j) = 0.0;
-                               new_cnt(j)    = 0;
-                           }
-                       }
-                       if(i == N - 1)
-                       {
-                           total_count = flag(i) + offset(i);
-                       }
-                   });
+        if(n > 0)
+            update_active_set_k3_kernel<<<cuda_tool::best_grid_dim(n, update_active_set_k3_kernel), cuda_tool::best_block_dim(update_active_set_k3_kernel), 0, nullptr>>>(
+                N,
+                N0,
+                unique_flag.cview(),
+                offset.cview(),
+                sort_index.cview(),
+                tmp_idx.cview(),
+                tmp_lambda.cview(),
+                tmp_cnt.cview(),
+                new_idx,
+                idx.view(),
+                lambda.view(),
+                cnt.view(),
+                total_count.viewer(),
+                n);
 
         int N1 = total_count;
         idx.resize(N1);
@@ -206,7 +928,8 @@ void GlobalActiveSetManager::Impl::update_active_set()
               PH_lambda,
               PH_cnt,
               vertex_half_plane_trajectory_filter->candidate_PHs(),
-              vertex_half_plane_trajectory_filter->toi_PHs());
+              vertex_half_plane_trajectory_filter->toi_PHs(),
+              PH_max_vertex_min_toi.cview());
     }
 
     if(simplex_trajectory_filter)
@@ -215,13 +938,15 @@ void GlobalActiveSetManager::Impl::update_active_set()
               PT_lambda,
               PT_cnt,
               simplex_trajectory_filter->candidate_PTs(),
-              simplex_trajectory_filter->toi_PTs());
+              simplex_trajectory_filter->toi_PTs(),
+              PT_max_vertex_min_toi.cview());
 
         merge(EE_idx,
               EE_lambda,
               EE_cnt,
               simplex_trajectory_filter->candidate_EEs(),
-              simplex_trajectory_filter->toi_EEs());
+              simplex_trajectory_filter->toi_EEs(),
+              EE_max_vertex_min_toi.cview());
     }
 
     logger::info("Active set update: {} + {} + {} -> {} + {} + {}",
@@ -235,7 +960,7 @@ void GlobalActiveSetManager::Impl::update_active_set()
 
 void GlobalActiveSetManager::Impl::linearize_constraints()
 {
-    using namespace muda;
+    using namespace cuda_tool;
     auto thicknesses = global_vertex_manager->thicknesses();
     auto d_hats      = global_vertex_manager->d_hats();
     auto x           = non_penetrate_positions;
@@ -257,157 +982,55 @@ void GlobalActiveSetManager::Impl::linearize_constraints()
 
     if(vertex_half_plane_trajectory_filter)
     {
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(PH_idx.size(),
-                   [thicknesses = thicknesses.cviewer().name("thicknesses"),
-                    d_hats      = d_hats.cviewer().name("d_hats"),
-                    PH_idx      = PH_idx.cviewer().name("PH_idx"),
-                    x           = x.cviewer().name("x"),
-                    plane_positions = half_plane->positions().cviewer().name("plane_positions"),
-                    plane_normals = half_plane->normals().cviewer().name("plane_normals"),
-                    PHs = PHs.viewer().name("PHs"),
-                    d0  = PH_d0.viewer().name("d0"),
-                    d_grad = PH_d_grad.viewer().name("d_grad")] __device__(int idx) mutable
-                   {
-                       int vI = PH_idx(idx)[0], hI = PH_idx(idx)[1];
-
-                       PHs(idx) = vI;
-
-                       const auto& P  = x(vI);
-                       const auto& hP = plane_positions(hI);
-                       const auto& hN = plane_normals(hI);
-
-                       Float thickness = thicknesses(vI);
-                       Float d_hat     = d_hats(vI);
-
-                       Float D;
-                       HalfPlaneD(D, P, hP, hN);
-                       D = sqrt(D);
-
-                       Vector3 GradD = hN;
-                       d_grad(idx)   = GradD;
-
-                       D -= GradD.dot(P);
-
-                       d0(idx) = D - thickness - d_hat;
-                   });
+        int n_ph = static_cast<int>(PH_idx.size());
+        if(n_ph > 0)
+            linearize_constraints_k1_kernel<<<cuda_tool::best_grid_dim(n_ph, linearize_constraints_k1_kernel), cuda_tool::best_block_dim(linearize_constraints_k1_kernel), 0, nullptr>>>(
+                thicknesses,
+                d_hats,
+                PH_idx.cview(),
+                x.cview(),
+                half_plane->positions(),
+                half_plane->normals(),
+                PHs.view(),
+                PH_d0.view(),
+                PH_d_grad.view(),
+                n_ph);
     }
 
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(PT_idx.size(),
-               [thicknesses = thicknesses.cviewer().name("thicknesses"),
-                d_hats      = d_hats.cviewer().name("d_hats"),
-                PT_idx      = PT_idx.cviewer().name("PT_idx"),
-                vs          = vs.cviewer().name("vs"),
-                tris        = tris.cviewer().name("tris"),
-                x           = x.cviewer().name("x"),
-                PTs         = PTs.viewer().name("PTs"),
-                d0          = PT_d0.viewer().name("d0"),
-                d_grad = PT_d_grad.viewer().name("d_grad")] __device__(int idx) mutable
-               {
-                   Vector3i tri = tris(PT_idx(idx)[1]);
-                   Vector4i PT(vs(PT_idx(idx)[0]), tri[0], tri[1], tri[2]);
+    int n_pt = static_cast<int>(PT_idx.size());
+    if(n_pt > 0)
+        linearize_constraints_k2_kernel<<<cuda_tool::best_grid_dim(n_pt, linearize_constraints_k2_kernel), cuda_tool::best_block_dim(linearize_constraints_k2_kernel), 0, nullptr>>>(
+            thicknesses,
+            d_hats,
+            PT_idx.cview(),
+            vs,
+            tris,
+            x.cview(),
+            PTs.view(),
+            PT_d0.view(),
+            PT_d_grad.view(),
+            n_pt);
 
-                   PTs(idx) = PT;
-
-                   const auto& P  = x(PT(0));
-                   const auto& T0 = x(PT(1));
-                   const auto& T1 = x(PT(2));
-                   const auto& T2 = x(PT(3));
-
-                   Float thickness = PT_thickness(thicknesses(PT(0)),
-                                                  thicknesses(PT(1)),
-                                                  thicknesses(PT(2)),
-                                                  thicknesses(PT(3)));
-
-                   Float d_hat = PT_d_hat(
-                       d_hats(PT(0)), d_hats(PT(1)), d_hats(PT(2)), d_hats(PT(3)));
-
-                   Vector4i flag = distance::point_triangle_distance_flag(P, T0, T1, T2);
-
-                   Float D;
-                   distance::point_triangle_distance2(flag, P, T0, T1, T2, D);
-                   D = sqrt(D);
-
-                   Vector12 GradD;
-                   distance::point_triangle_distance2_gradient(flag, P, T0, T1, T2, GradD);
-                   GradD /= 2 * D;
-                   d_grad(idx) = GradD;
-
-                   D -= GradD.segment<3>(0).dot(P);
-                   D -= GradD.segment<3>(3).dot(T0);
-                   D -= GradD.segment<3>(6).dot(T1);
-                   D -= GradD.segment<3>(9).dot(T2);
-
-                   d0(idx) = D - thickness - d_hat;
-               });
-
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(EE_idx.size(),
-               [thicknesses = thicknesses.cviewer().name("thicknesses"),
-                d_hats      = d_hats.cviewer().name("d_hats"),
-                EE_idx      = EE_idx.cviewer().name("EE_idx"),
-                edges       = edges.cviewer().name("edges"),
-                x           = x.cviewer().name("pos"),
-                EEs         = EEs.viewer().name("EEs"),
-                d0          = EE_d0.viewer().name("d0"),
-                d_grad      = EE_d_grad.viewer().name("d_grad"),
-                lambda      = EE_lambda.viewer().name("lambda"),
-                cnt         = EE_cnt.viewer().name("cnt"),
-                large_cnt   = 1 << 30] __device__(int idx) mutable
-               {
-                   Vector2i e0 = edges(EE_idx(idx)[0]), e1 = edges(EE_idx(idx)[1]);
-                   Vector4i EE(e0[0], e0[1], e1[0], e1[1]);
-
-                   EEs(idx) = EE;
-
-                   const auto& E0 = x(EE(0));
-                   const auto& E1 = x(EE(1));
-                   const auto& E2 = x(EE(2));
-                   const auto& E3 = x(EE(3));
-
-                   Float eps_x;
-                   distance::edge_edge_mollifier_threshold(E0, E1, E2, E3, 1e-6, eps_x);
-                   if(distance::need_mollify(E0, E1, E2, E3, eps_x))
-                   {
-                       cnt(idx)    = large_cnt;
-                       lambda(idx) = 0;
-                   }
-
-                   Float thickness = EE_thickness(thicknesses(EE(0)),
-                                                  thicknesses(EE(1)),
-                                                  thicknesses(EE(2)),
-                                                  thicknesses(EE(3)));
-
-                   Float d_hat = EE_d_hat(
-                       d_hats(EE(0)), d_hats(EE(1)), d_hats(EE(2)), d_hats(EE(3)));
-
-                   Vector4i flag = distance::edge_edge_distance_flag(E0, E1, E2, E3);
-
-                   Float D;
-                   distance::edge_edge_distance2(flag, E0, E1, E2, E3, D);
-                   D = sqrt(D);
-
-                   Vector12 GradD;
-                   distance::edge_edge_distance2_gradient(flag, E0, E1, E2, E3, GradD);
-                   GradD /= 2 * D;
-                   d_grad(idx) = GradD;
-
-                   D -= GradD.segment<3>(0).dot(E0);
-                   D -= GradD.segment<3>(3).dot(E1);
-                   D -= GradD.segment<3>(6).dot(E2);
-                   D -= GradD.segment<3>(9).dot(E3);
-
-                   d0(idx) = D - thickness - d_hat;
-               });
+    int n_ee = static_cast<int>(EE_idx.size());
+    if(n_ee > 0)
+        linearize_constraints_k3_kernel<<<cuda_tool::best_grid_dim(n_ee, linearize_constraints_k3_kernel), cuda_tool::best_block_dim(linearize_constraints_k3_kernel), 0, nullptr>>>(
+            thicknesses,
+            d_hats,
+            EE_idx.cview(),
+            edges,
+            x.cview(),
+            EEs.view(),
+            EE_d0.view(),
+            EE_d_grad.view(),
+            EE_lambda.view(),
+            EE_cnt.view(),
+            1 << 30,
+            n_ee);
 }
 
 void GlobalActiveSetManager::Impl::update_slack()
 {
-    using namespace muda;
+    using namespace cuda_tool;
     auto x_hat = global_vertex_manager->positions();
 
     loose_resize(PH_slack, PHs.size());
@@ -416,232 +1039,111 @@ void GlobalActiveSetManager::Impl::update_slack()
 
     if(vertex_half_plane_trajectory_filter)
     {
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(PHs.size(),
-                   [mu_vertices = mu_vertices.cviewer().name("PH_vertices"),
-                    PHs         = PHs.cviewer().name("PHs"),
-                    x_hat       = x_hat.cviewer().name("x_hat"),
-                    PH_d_grad   = PH_d_grad.cviewer().name("PH_d_grad"),
-                    PH_lambda   = PH_lambda.cviewer().name("PH_lambda"),
-                    d0          = PH_d0.viewer().name("d0"),
-                    slack = PH_slack.viewer().name("slack")] __device__(int idx) mutable
-                   {
-                       auto PH     = PHs(idx);
-                       auto mu     = mu_vertices(PH);
-                       auto d_grad = PH_d_grad(idx);
-                       auto d = d0(idx), lambda = PH_lambda(idx), d_shift = 0.0;
-                       d_shift += d_grad.dot(x_hat(PH));
-                       if(d + d_shift - lambda / mu > 0)
-                           slack(idx) = d + d_shift - lambda / mu;
-                       else
-                           slack(idx) = 0;
-                       d -= slack(idx) + lambda / mu;
-                       d0(idx) = d;
-                   });
+        int n_ph = static_cast<int>(PHs.size());
+        if(n_ph > 0)
+            update_slack_k1_kernel<<<cuda_tool::best_grid_dim(n_ph, update_slack_k1_kernel), cuda_tool::best_block_dim(update_slack_k1_kernel), 0, nullptr>>>(
+                mu_vertices.cview(),
+                PHs.cview(),
+                x_hat,
+                PH_d_grad.cview(),
+                PH_lambda.cview(),
+                PH_d0.view(),
+                PH_slack.view(),
+                n_ph);
     }
 
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(PTs.size(),
-               [mu_vertices = mu_vertices.cviewer().name("PH_vertices"),
-                PTs         = PTs.cviewer().name("PTs"),
-                x_hat       = x_hat.cviewer().name("x_hat"),
-                PT_d_grad   = PT_d_grad.cviewer().name("PT_d_grad"),
-                PT_lambda   = PT_lambda.cviewer().name("PT_lambda"),
-                d0          = PT_d0.viewer().name("d0"),
-                slack = PT_slack.viewer().name("slack")] __device__(int idx) mutable
-               {
-                   auto PT = PTs(idx);
-                   auto mu = min(min(mu_vertices(PT(0)), mu_vertices(PT(1))),
-                                 min(mu_vertices(PT(2)), mu_vertices(PT(3))));
-                   auto d_grad = PT_d_grad(idx);
-                   auto d = d0(idx), lambda = PT_lambda(idx), d_shift = 0.0;
-                   d_shift += d_grad.segment<3>(0).dot(x_hat(PT(0)));
-                   d_shift += d_grad.segment<3>(3).dot(x_hat(PT(1)));
-                   d_shift += d_grad.segment<3>(6).dot(x_hat(PT(2)));
-                   d_shift += d_grad.segment<3>(9).dot(x_hat(PT(3)));
-                   if(d + d_shift - lambda / mu > 0)
-                       slack(idx) = d + d_shift - lambda / mu;
-                   else
-                       slack(idx) = 0;
-                   d -= slack(idx) + lambda / mu;
-                   d0(idx) = d;
-               });
+    int n_pt = static_cast<int>(PTs.size());
+    if(n_pt > 0)
+        update_slack_k2_kernel<<<cuda_tool::best_grid_dim(n_pt, update_slack_k2_kernel), cuda_tool::best_block_dim(update_slack_k2_kernel), 0, nullptr>>>(
+            mu_vertices.cview(),
+            PTs.cview(),
+            x_hat,
+            PT_d_grad.cview(),
+            PT_lambda.cview(),
+            PT_d0.view(),
+            PT_slack.view(),
+            n_pt);
 
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(EEs.size(),
-               [mu_vertices = mu_vertices.cviewer().name("PH_vertices"),
-                EEs         = EEs.cviewer().name("EEs"),
-                x_hat       = x_hat.cviewer().name("x_hat"),
-                EE_d_grad   = EE_d_grad.cviewer().name("EE_d_grad"),
-                EE_lambda   = EE_lambda.cviewer().name("EE_lambda"),
-                d0          = EE_d0.viewer().name("d0"),
-                slack = EE_slack.viewer().name("slack")] __device__(int idx) mutable
-               {
-                   auto EE = EEs(idx);
-                   auto mu = min(min(mu_vertices(EE(0)), mu_vertices(EE(1))),
-                                 min(mu_vertices(EE(2)), mu_vertices(EE(3))));
-                   auto d_grad = EE_d_grad(idx);
-                   auto d = d0(idx), lambda = EE_lambda(idx), d_shift = 0.0;
-                   d_shift += d_grad.segment<3>(0).dot(x_hat(EE(0)));
-                   d_shift += d_grad.segment<3>(3).dot(x_hat(EE(1)));
-                   d_shift += d_grad.segment<3>(6).dot(x_hat(EE(2)));
-                   d_shift += d_grad.segment<3>(9).dot(x_hat(EE(3)));
-                   if(d + d_shift - lambda / mu > 0)
-                       slack(idx) = d + d_shift - lambda / mu;
-                   else
-                       slack(idx) = 0;
-                   d -= slack(idx) + lambda / mu;
-                   d0(idx) = d;
-               });
+    int n_ee = static_cast<int>(EEs.size());
+    if(n_ee > 0)
+        update_slack_k3_kernel<<<cuda_tool::best_grid_dim(n_ee, update_slack_k3_kernel), cuda_tool::best_block_dim(update_slack_k3_kernel), 0, nullptr>>>(
+            mu_vertices.cview(),
+            EEs.cview(),
+            x_hat,
+            EE_d_grad.cview(),
+            EE_lambda.cview(),
+            EE_d0.view(),
+            EE_slack.view(),
+            n_ee);
 }
 
 void GlobalActiveSetManager::Impl::update_lambda()
 {
-    using namespace muda;
+    using namespace cuda_tool;
     auto x_hat = global_vertex_manager->positions();
 
     if(vertex_half_plane_trajectory_filter)
     {
-        ParallelFor()
-            .file_line(__FILE__, __LINE__)
-            .apply(PHs.size(),
-                   [mu_vertices = mu_vertices.cviewer().name("PH_vertices"),
-                    PHs         = PHs.cviewer().name("PHs"),
-                    x_hat       = x_hat.cviewer().name("x_hat"),
-                    PH_d_grad   = PH_d_grad.cviewer().name("PH_d_grad"),
-                    d0          = PH_d0.cviewer().name("d0"),
-                    slack       = PH_slack.cviewer().name("slack"),
-                    PH_lambda   = PH_lambda.viewer().name("PH_lambda"),
-                    PH_cnt = PH_cnt.viewer().name("PH_cnt")] __device__(int idx) mutable
-                   {
-                       auto vI     = PHs(idx);
-                       auto mu     = mu_vertices(vI);
-                       auto d_grad = PH_d_grad(idx);
-                       auto d = d0(idx), &lambda = PH_lambda(idx), d_shift = 0.0;
-                       auto& cnt = PH_cnt(idx);
-                       d_shift += d_grad.dot(x_hat(vI));
-                       d += slack(idx) + lambda / mu;
-                       if(d + d_shift - lambda / mu > 0)
-                       {
-                           lambda = 0;
-                           if(cnt >= 0)
-                               cnt++;
-                           else
-                               cnt--;
-                       }
-                       else
-                       {
-                           lambda -= (d + d_shift) * mu;
-                           if(cnt == 0 || cnt > 5)
-                               cnt = 0;
-                           else
-                               cnt = -1;
-                       }
-                   });
+        int n_ph = static_cast<int>(PHs.size());
+        if(n_ph > 0)
+            update_lambda_k1_kernel<<<cuda_tool::best_grid_dim(n_ph, update_lambda_k1_kernel), cuda_tool::best_block_dim(update_lambda_k1_kernel), 0, nullptr>>>(
+                mu_vertices.cview(),
+                PHs.cview(),
+                x_hat,
+                PH_d_grad.cview(),
+                PH_d0.cview(),
+                PH_slack.cview(),
+                PH_lambda.view(),
+                PH_cnt.view(),
+                n_ph);
     }
 
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(PTs.size(),
-               [mu_vertices = mu_vertices.cviewer().name("mu_vertices"),
-                PTs         = PTs.cviewer().name("PTs"),
-                x_hat       = x_hat.cviewer().name("x_hat"),
-                PT_d_grad   = PT_d_grad.cviewer().name("PT_d_grad"),
-                d0          = PT_d0.cviewer().name("d0"),
-                slack       = PT_slack.cviewer().name("slack"),
-                PT_lambda   = PT_lambda.viewer().name("PT_lambda"),
-                PT_cnt = PT_cnt.viewer().name("PT_cnt")] __device__(int idx) mutable
-               {
-                   auto  PT = PTs(idx);
-                   auto  mu = min(min(mu_vertices(PT(0)), mu_vertices(PT(1))),
-                                  min(mu_vertices(PT(2)), mu_vertices(PT(3))));
-                   auto  d_grad = PT_d_grad(idx);
-                   auto  d = d0(idx), &lambda = PT_lambda(idx), d_shift = 0.0;
-                   auto& cnt = PT_cnt(idx);
-                   d_shift += d_grad.segment<3>(0).dot(x_hat(PT(0)));
-                   d_shift += d_grad.segment<3>(3).dot(x_hat(PT(1)));
-                   d_shift += d_grad.segment<3>(6).dot(x_hat(PT(2)));
-                   d_shift += d_grad.segment<3>(9).dot(x_hat(PT(3)));
-                   d += slack(idx) + lambda / mu;
-                   if(d + d_shift - lambda / mu > 0)
-                   {
-                       lambda = 0;
-                       if(cnt >= 0)
-                           cnt++;
-                       else
-                           cnt--;
-                   }
-                   else
-                   {
-                       lambda -= (d + d_shift) * mu;
-                       if(cnt == 0 || cnt > 5)
-                           cnt = 0;
-                       else
-                           cnt = -1;
-                   }
-               });
+    int n_pt = static_cast<int>(PTs.size());
+    if(n_pt > 0)
+        update_lambda_k2_kernel<<<cuda_tool::best_grid_dim(n_pt, update_lambda_k2_kernel), cuda_tool::best_block_dim(update_lambda_k2_kernel), 0, nullptr>>>(
+            mu_vertices.cview(),
+            PTs.cview(),
+            x_hat,
+            PT_d_grad.cview(),
+            PT_d0.cview(),
+            PT_slack.cview(),
+            PT_lambda.view(),
+            PT_cnt.view(),
+            n_pt);
 
-    ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(EEs.size(),
-               [mu_vertices = mu_vertices.cviewer().name("mu_vertices"),
-                EEs         = EEs.cviewer().name("EEs"),
-                x_hat       = x_hat.cviewer().name("x_hat"),
-                EE_d_grad   = EE_d_grad.cviewer().name("EE_d_grad"),
-                d0          = EE_d0.cviewer().name("d0"),
-                slack       = EE_slack.cviewer().name("slack"),
-                EE_lambda   = EE_lambda.viewer().name("EE_lambda"),
-                EE_cnt = EE_cnt.viewer().name("EE_cnt")] __device__(int idx) mutable
-               {
-                   auto  EE = EEs(idx);
-                   auto  mu = min(min(mu_vertices(EE(0)), mu_vertices(EE(1))),
-                                  min(mu_vertices(EE(2)), mu_vertices(EE(3))));
-                   auto  d_grad = EE_d_grad(idx);
-                   auto  d = d0(idx), &lambda = EE_lambda(idx), d_shift = 0.0;
-                   auto& cnt = EE_cnt(idx);
-                   d_shift += d_grad.segment<3>(0).dot(x_hat(EE(0)));
-                   d_shift += d_grad.segment<3>(3).dot(x_hat(EE(1)));
-                   d_shift += d_grad.segment<3>(6).dot(x_hat(EE(2)));
-                   d_shift += d_grad.segment<3>(9).dot(x_hat(EE(3)));
-                   d += slack(idx) + lambda / mu;
-                   if(d + d_shift - lambda / mu > 0)
-                   {
-                       lambda = 0;
-                       if(cnt >= 0)
-                           cnt++;
-                       else
-                           cnt--;
-                   }
-                   else
-                   {
-                       lambda -= (d + d_shift) * mu;
-                       if(cnt == 0 || cnt > 5)
-                           cnt = 0;
-                       else
-                           cnt = -1;
-                   }
-               });
+    int n_ee = static_cast<int>(EEs.size());
+    if(n_ee > 0)
+        update_lambda_k3_kernel<<<cuda_tool::best_grid_dim(n_ee, update_lambda_k3_kernel), cuda_tool::best_block_dim(update_lambda_k3_kernel), 0, nullptr>>>(
+            mu_vertices.cview(),
+            EEs.cview(),
+            x_hat,
+            EE_d_grad.cview(),
+            EE_d0.cview(),
+            EE_slack.cview(),
+            EE_lambda.view(),
+            EE_cnt.view(),
+            n_ee);
 }
 
 void GlobalActiveSetManager::Impl::update_friction()
 {
     PTs_friction.resize(PTs.size());
     PT_lambda_friction.resize(PTs.size());
-    muda::BufferLaunch().copy<Vector4i>(PTs_friction.view(), std::as_const(PTs));
-    muda::BufferLaunch().copy<Float>(PT_lambda_friction.view(), std::as_const(PT_lambda));
+    cuda_tool::BufferLaunch().copy<Vector4i>(PTs_friction.view(), std::as_const(PTs));
+    cuda_tool::BufferLaunch().copy<Float>(PT_lambda_friction.view(),
+                                          std::as_const(PT_lambda));
 
     EEs_friction.resize(EEs.size());
     EE_lambda_friction.resize(EEs.size());
-    muda::BufferLaunch().copy<Vector4i>(EEs_friction.view(), std::as_const(EEs));
-    muda::BufferLaunch().copy<Float>(EE_lambda_friction.view(), std::as_const(EE_lambda));
+    cuda_tool::BufferLaunch().copy<Vector4i>(EEs_friction.view(), std::as_const(EEs));
+    cuda_tool::BufferLaunch().copy<Float>(EE_lambda_friction.view(),
+                                          std::as_const(EE_lambda));
 
     PHs_friction.resize(PHs.size());
     PH_lambda_friction.resize(PHs.size());
-    muda::BufferLaunch().copy<Vector2i>(PHs_friction.view(), std::as_const(PH_idx));
-    muda::BufferLaunch().copy<Float>(PH_lambda_friction.view(), std::as_const(PH_lambda));
+    cuda_tool::BufferLaunch().copy<Vector2i>(PHs_friction.view(), std::as_const(PH_idx));
+    cuda_tool::BufferLaunch().copy<Float>(PH_lambda_friction.view(),
+                                          std::as_const(PH_lambda));
 }
 
 void GlobalActiveSetManager::Impl::record_non_penetrate_positions()
@@ -649,7 +1151,8 @@ void GlobalActiveSetManager::Impl::record_non_penetrate_positions()
     auto x_hat = global_vertex_manager->positions();
     if(non_penetrate_positions.size() != x_hat.size())
         non_penetrate_positions.resize(x_hat.size());
-    muda::BufferLaunch().copy<Vector3>(non_penetrate_positions.view(), std::as_const(x_hat));
+    cuda_tool::BufferLaunch().copy<Vector3>(non_penetrate_positions.view(),
+                                            std::as_const(x_hat));
     for(auto&& [i, R] : enumerate(active_set_reporters.view()))
     {
         R->record_non_penetrate_state();
@@ -681,130 +1184,127 @@ void GlobalActiveSetManager::Impl::post_ccd()
 void GlobalActiveSetManager::Impl::advance_non_penetrate_positions(Float alpha)
 {
     auto x_hat = global_vertex_manager->positions();
-    muda::ParallelFor()
-        .file_line(__FILE__, __LINE__)
-        .apply(non_penetrate_positions.size(),
-               [x     = non_penetrate_positions.viewer().name("x"),
-                x_hat = x_hat.cviewer().name("x_hat"),
-                alpha = alpha] __device__(int i) mutable
-               { x(i) = x(i) + (x_hat(i) - x(i)) * alpha; });
+    int  n     = static_cast<int>(non_penetrate_positions.size());
+    if(n > 0)
+        advance_non_penetrate_positions_kernel<<<cuda_tool::best_grid_dim(n, advance_non_penetrate_positions_kernel), cuda_tool::best_block_dim(advance_non_penetrate_positions_kernel), 0, nullptr>>>(
+            non_penetrate_positions.view(), x_hat, alpha, n);
     for(auto&& [i, R] : enumerate(active_set_reporters.view()))
     {
         R->advance_non_penetrate_state(alpha);
     }
 }
 
-muda::CBufferView<int> GlobalActiveSetManager::PHs() const
+cuda_tool::CBufferView<int> GlobalActiveSetManager::PHs() const
 {
     return m_impl.PHs.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::PH_d0() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::PH_d0() const
 {
     return m_impl.PH_d0.view();
 }
 
-muda::CBufferView<Vector3> GlobalActiveSetManager::PH_d_grad() const
+cuda_tool::CBufferView<Vector3> GlobalActiveSetManager::PH_d_grad() const
 {
     return m_impl.PH_d_grad.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::PH_lambda() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::PH_lambda() const
 {
     return m_impl.PH_lambda.view();
 }
 
-muda::CBufferView<int> GlobalActiveSetManager::PH_cnt() const
+cuda_tool::CBufferView<int> GlobalActiveSetManager::PH_cnt() const
 {
     return m_impl.PH_cnt.view();
 }
 
-muda::CBufferView<Vector2i> GlobalActiveSetManager::PHs_friction() const
+cuda_tool::CBufferView<Vector2i> GlobalActiveSetManager::PHs_friction() const
 {
     return m_impl.PHs_friction.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::PH_lambda_friction() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::PH_lambda_friction() const
 {
     return m_impl.PH_lambda_friction.view();
 }
 
-muda::CBufferView<Vector4i> GlobalActiveSetManager::PTs() const
+cuda_tool::CBufferView<Vector4i> GlobalActiveSetManager::PTs() const
 {
     return m_impl.PTs.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::PT_d0() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::PT_d0() const
 {
     return m_impl.PT_d0.view();
 }
 
-muda::CBufferView<Vector12> GlobalActiveSetManager::PT_d_grad() const
+cuda_tool::CBufferView<Vector12> GlobalActiveSetManager::PT_d_grad() const
 {
     return m_impl.PT_d_grad.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::PT_lambda() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::PT_lambda() const
 {
     return m_impl.PT_lambda.view();
 }
 
-muda::CBufferView<int> GlobalActiveSetManager::PT_cnt() const
+cuda_tool::CBufferView<int> GlobalActiveSetManager::PT_cnt() const
 {
     return m_impl.PT_cnt.view();
 }
 
-muda::CBufferView<Vector4i> GlobalActiveSetManager::PTs_friction() const
+cuda_tool::CBufferView<Vector4i> GlobalActiveSetManager::PTs_friction() const
 {
     return m_impl.PTs_friction.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::PT_lambda_friction() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::PT_lambda_friction() const
 {
     return m_impl.PT_lambda_friction.view();
 }
 
-muda::CBufferView<Vector4i> GlobalActiveSetManager::EEs() const
+cuda_tool::CBufferView<Vector4i> GlobalActiveSetManager::EEs() const
 {
     return m_impl.EEs.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::EE_d0() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::EE_d0() const
 {
     return m_impl.EE_d0.view();
 }
 
-muda::CBufferView<Vector12> GlobalActiveSetManager::EE_d_grad() const
+cuda_tool::CBufferView<Vector12> GlobalActiveSetManager::EE_d_grad() const
 {
     return m_impl.EE_d_grad.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::EE_lambda() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::EE_lambda() const
 {
     return m_impl.EE_lambda.view();
 }
 
-muda::CBufferView<int> GlobalActiveSetManager::EE_cnt() const
+cuda_tool::CBufferView<int> GlobalActiveSetManager::EE_cnt() const
 {
     return m_impl.EE_cnt.view();
 }
 
-muda::CBufferView<Vector4i> GlobalActiveSetManager::EEs_friction() const
+cuda_tool::CBufferView<Vector4i> GlobalActiveSetManager::EEs_friction() const
 {
     return m_impl.EEs_friction.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::EE_lambda_friction() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::EE_lambda_friction() const
 {
     return m_impl.EE_lambda_friction.view();
 }
 
-muda::CBufferView<Vector3> GlobalActiveSetManager::non_penetrate_positions() const
+cuda_tool::CBufferView<Vector3> GlobalActiveSetManager::non_penetrate_positions() const
 {
     return m_impl.non_penetrate_positions.view();
 }
 
-muda::CBufferView<Float> GlobalActiveSetManager::mu_vertices() const
+cuda_tool::CBufferView<Float> GlobalActiveSetManager::mu_vertices() const
 {
     return m_impl.mu_vertices.view();
 }
@@ -824,6 +1324,16 @@ Float GlobalActiveSetManager::alpha_lower_bound() const
     return m_impl.alpha_lower_bound;
 }
 
+const std::string& GlobalActiveSetManager::mu_scale_mode() const noexcept
+{
+    return m_impl.mu_scale_mode;
+}
+
+Float GlobalActiveSetManager::mu_scale_diag_norm() const noexcept
+{
+    return m_impl.mu_scale_diag_norm;
+}
+
 GlobalActiveSetManager::NonPenetratePositionInfo::NonPenetratePositionInfo(Impl* impl,
                                                                            SizeT offset,
                                                                            SizeT count) noexcept
@@ -833,7 +1343,7 @@ GlobalActiveSetManager::NonPenetratePositionInfo::NonPenetratePositionInfo(Impl*
 {
 }
 
-muda::BufferView<Vector3> GlobalActiveSetManager::NonPenetratePositionInfo::non_penetrate_positions() const noexcept
+cuda_tool::BufferView<Vector3> GlobalActiveSetManager::NonPenetratePositionInfo::non_penetrate_positions() const noexcept
 {
     return m_impl->non_penetrate_positions.view(m_offset, m_count);
 }
@@ -843,7 +1353,7 @@ GlobalActiveSetManager::StiffnessEstimateInfo::StiffnessEstimateInfo(Impl* impl)
 {
 }
 
-muda::BufferView<Float> GlobalActiveSetManager::StiffnessEstimateInfo::mu_vertices(
+cuda_tool::BufferView<Float> GlobalActiveSetManager::StiffnessEstimateInfo::mu_vertices(
     SizeT offset, SizeT count) const noexcept
 {
     return m_impl->mu_vertices.view(offset, count);
@@ -860,9 +1370,13 @@ void GlobalActiveSetManager::Impl::init(WorldVisitor& world)
     dt_attr     = config.find<Float>("dt");
     UIPC_ASSERT(dt_attr, "Scene config must have a 'dt' attribute.");
     decay_factor = config.find<Float>("contact/al-ipc/decay_factor")->view()[0];
+    inactive_count_limit = details::al_inactive_count_limit(decay_factor);
     toi_threshold = config.find<Float>("contact/al-ipc/toi_threshold")->view()[0];
     alpha_lower_bound =
         config.find<Float>("contact/al-ipc/alpha_lower_bound")->view()[0];
+    mu_scale_mode = config.find<std::string>("contact/al-ipc/mu_scale_mode")->view()[0];
+    mu_scale_diag_norm =
+        config.find<Float>("contact/al-ipc/mu_scale_diag_norm")->view()[0];
     energy_enabled = true;
 }
 
@@ -874,6 +1388,11 @@ void GlobalActiveSetManager::init()
 void GlobalActiveSetManager::init_mu()
 {
     m_impl.init_mu();
+}
+
+void GlobalActiveSetManager::init_mu_from_scalar(Float mu)
+{
+    m_impl.init_mu_from_scalar(mu);
 }
 
 void GlobalActiveSetManager::filter_active()

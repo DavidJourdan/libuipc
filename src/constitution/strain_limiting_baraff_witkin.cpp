@@ -23,26 +23,63 @@ StrainLimitingBaraffWitkinShell::StrainLimitingBaraffWitkinShell(const Json& con
 }
 
 void StrainLimitingBaraffWitkinShell::apply_to(geometry::SimplicialComplex& sc,
-                                               const ElasticModuli2D& moduli,
+                                               const ElasticModuli2D& stretch_a_moduli,
+                                               const ElasticModuli2D& stretch_b_moduli,
+                                               const ElasticModuli2D& shear_moduli,
                                                Float mass_density,
-                                               Float thickness) const
+                                               Float thickness,
+                                               Float strain_rate) const
+{
+    apply_to(sc, stretch_a_moduli, shear_moduli, mass_density, thickness, strain_rate);
+
+    Float stretch_b_stiff =
+        (stretch_b_moduli.lambda() + 2 * stretch_b_moduli.mu()) * (2 * thickness);
+    auto stretch_b = sc.triangles().create<Float>("stretch_stiffness_b", stretch_b_stiff);
+    std::ranges::fill(geometry::view(*stretch_b), stretch_b_stiff);
+}
+
+void StrainLimitingBaraffWitkinShell::apply_to(geometry::SimplicialComplex& sc,
+                                               const ElasticModuli2D& stretch_moduli,
+                                               const ElasticModuli2D& shear_moduli,
+                                               Float mass_density,
+                                               Float thickness,
+                                               Float strain_rate) const
 {
     Base::apply_to(sc, mass_density, thickness);
 
-    auto lambda = moduli.lambda();
-    auto mu     = moduli.mu();
+    // Cloth stiffness model (same convention as mas-pncg), with independent
+    // stretch / shear material parameters:
+    //   stretchStiff = E_stretch * (2r) / (1 - nu_stretch^2)
+    //                [= (lambda_s + 2*mu_s) * (2r)]
+    //   shearStiff   = E_shear / (2*(1 + nu_shear))        [= mu_shear]
+    // The stored thickness is the one-sided collision offset. Stretch uses
+    // the full shell thickness 2r; shear remains an independently calibrated
+    // two-dimensional effective coefficient.
+    Float stretch_stiff =
+        (stretch_moduli.lambda() + 2 * stretch_moduli.mu()) * (2 * thickness);
+    Float shear_stiff = shear_moduli.mu();
 
     UIPC_ASSERT_THROW(sc.dim() == 2, "StrainLimitingBaraffWitkinShell only supports 2D simplicial complex");
 
     auto lambda_attr = sc.triangles().find<Float>("lambda");
     if(!lambda_attr)
-        lambda_attr = sc.triangles().create<Float>("lambda", lambda);
-    std::ranges::fill(geometry::view(*lambda_attr), lambda);
+        lambda_attr = sc.triangles().create<Float>("lambda", stretch_stiff);
+    std::ranges::fill(geometry::view(*lambda_attr), stretch_stiff);
+
+    // Absence means both directions follow lambda, including later per-triangle
+    // edits and legacy serialized scenes. Do not leave a stale independent Kb.
+    if(sc.triangles().find<Float>("stretch_stiffness_b"))
+        sc.triangles().destroy("stretch_stiffness_b");
 
     auto mu_attr = sc.triangles().find<Float>("mu");
     if(!mu_attr)
-        mu_attr = sc.triangles().create<Float>("mu", mu);
-    std::ranges::fill(geometry::view(*mu_attr), mu);
+        mu_attr = sc.triangles().create<Float>("mu", shear_stiff);
+    std::ranges::fill(geometry::view(*mu_attr), shear_stiff);
+
+    auto strain_rate_attr = sc.triangles().find<Float>("strain_rate");
+    if(!strain_rate_attr)
+        strain_rate_attr = sc.triangles().create<Float>("strain_rate", strain_rate);
+    std::ranges::fill(geometry::view(*strain_rate_attr), strain_rate);
 }
 
 Json StrainLimitingBaraffWitkinShell::default_config() noexcept

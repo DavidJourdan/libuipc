@@ -13,7 +13,7 @@ void FEM3DConstitution::do_compute_energy(FiniteElementConstitution::ComputeEner
     FEM3DConstitution::ComputeEnergyInfo this_info{
         this, m_index_in_dim, info.dt(), info.energies()};
 
-    // Capture: muda::BufferView<Float> → muda::CBufferView<Float> (implicit)
+    // Capture: cuda_tool::BufferView<Float> → cuda_tool::CBufferView<Float> (implicit)
     m_element_energies = this_info.energies();
     // Topology is stable; capture once. Subsequent overwrites are harmless.
     m_element_indices = this_info.indices();
@@ -39,29 +39,29 @@ IndexT FEM3DConstitution::get_dim() const noexcept
     return 3;
 }
 
-muda::CBufferView<Vector4i> FEM3DConstitution::BaseInfo::indices() const noexcept
+cuda_tool::CBufferView<Vector4i> FEM3DConstitution::BaseInfo::indices() const noexcept
 {
     auto& info = constitution_info();
     return m_impl->fem().tets.view(info.primitive_offset, info.primitive_count);
 }
 
-muda::CBufferView<Vector3> FEM3DConstitution::BaseInfo::xs() const noexcept
+cuda_tool::CBufferView<Vector3> FEM3DConstitution::BaseInfo::xs() const noexcept
 {
     return m_impl->fem().xs.view();  // must return full buffer, because the indices index into the full buffer
 }
 
-muda::CBufferView<Vector3> FEM3DConstitution::BaseInfo::x_bars() const noexcept
+cuda_tool::CBufferView<Vector3> FEM3DConstitution::BaseInfo::x_bars() const noexcept
 {
     return m_impl->fem().x_bars.view();  // must return full buffer, because the indices index into the full buffer
 }
 
-muda::CBufferView<Matrix3x3> FEM3DConstitution::BaseInfo::Dm_invs() const noexcept
+cuda_tool::CBufferView<Matrix3x3> FEM3DConstitution::BaseInfo::Dm_invs() const noexcept
 {
     auto& info = constitution_info();
     return m_impl->fem().Dm3x3_invs.view(info.primitive_offset, info.primitive_count);
 }
 
-muda::CBufferView<Float> FEM3DConstitution::BaseInfo::rest_volumes() const noexcept
+cuda_tool::CBufferView<Float> FEM3DConstitution::BaseInfo::rest_volumes() const noexcept
 {
     auto& info = constitution_info();
     return m_impl->fem().rest_volumes.view(info.primitive_offset, info.primitive_count);
@@ -72,22 +72,22 @@ const FiniteElementMethod::ConstitutionInfo& FEM3DConstitution::BaseInfo::consti
     return m_impl->constitution_info();
 }
 
-muda::CBufferView<Vector4i> FEM3DConstitution::element_indices() const noexcept
+cuda_tool::CBufferView<Vector4i> FEM3DConstitution::element_indices() const noexcept
 {
     return m_element_indices;
 }
 
-muda::CBufferView<Float> FEM3DConstitution::element_energies() const noexcept
+cuda_tool::CBufferView<Float> FEM3DConstitution::element_energies() const noexcept
 {
     return m_element_energies;
 }
 
-muda::CDoubletVectorView<Float, 3> FEM3DConstitution::element_gradients() const noexcept
+cuda_tool::CDoubletVectorView<Float, 3> FEM3DConstitution::element_gradients() const noexcept
 {
     return m_element_gradients;
 }
 
-muda::CTripletMatrixView<Float, 3> FEM3DConstitution::element_hessians() const noexcept
+cuda_tool::CTripletMatrixView<Float, 3> FEM3DConstitution::element_hessians() const noexcept
 {
     return m_element_hessians;
 }

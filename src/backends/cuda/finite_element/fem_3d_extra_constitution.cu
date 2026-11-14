@@ -18,7 +18,7 @@ void FEM3DExtraConstitution::do_compute_energy(FiniteElementExtraConstitution::C
 {
     FEM3DExtraConstitution::ComputeEnergyInfo this_info{this, &info, info.dt()};
 
-    // Capture: muda::BufferView<Float> → muda::CBufferView<Float> (implicit)
+    // Capture: cuda_tool::BufferView<Float> → cuda_tool::CBufferView<Float> (implicit)
     m_element_energies = this_info.energies();
     // Topology is stable; capture once. Subsequent overwrites are harmless.
     m_element_indices = this_info.indices();
@@ -58,47 +58,47 @@ span<const FiniteElementMethod::GeoInfo> FEM3DExtraConstitution::BaseInfo::geo_i
     return m_impl->geo_infos();
 }
 
-muda::CBufferView<Vector3> FEM3DExtraConstitution::BaseInfo::xs() const noexcept
+cuda_tool::CBufferView<Vector3> FEM3DExtraConstitution::BaseInfo::xs() const noexcept
 {
     return m_impl->fem().xs.view();
 }
 
-muda::CBufferView<Vector3> FEM3DExtraConstitution::BaseInfo::x_bars() const noexcept
+cuda_tool::CBufferView<Vector3> FEM3DExtraConstitution::BaseInfo::x_bars() const noexcept
 {
     return m_impl->fem().x_bars.view();
 }
 
-muda::CBufferView<Vector4i> FEM3DExtraConstitution::BaseInfo::indices() const noexcept
+cuda_tool::CBufferView<Vector4i> FEM3DExtraConstitution::BaseInfo::indices() const noexcept
 {
     return m_impl->fem().tets.view();
 }
 
-muda::CBufferView<Matrix3x3> FEM3DExtraConstitution::BaseInfo::Dm_invs() const noexcept
+cuda_tool::CBufferView<Matrix3x3> FEM3DExtraConstitution::BaseInfo::Dm_invs() const noexcept
 {
     return m_impl->fem().Dm3x3_invs.view();
 }
 
-muda::CBufferView<Float> FEM3DExtraConstitution::BaseInfo::rest_volumes() const noexcept
+cuda_tool::CBufferView<Float> FEM3DExtraConstitution::BaseInfo::rest_volumes() const noexcept
 {
     return m_impl->fem().rest_volumes.view();
 }
 
-muda::CBufferView<Vector4i> FEM3DExtraConstitution::element_indices() const noexcept
+cuda_tool::CBufferView<Vector4i> FEM3DExtraConstitution::element_indices() const noexcept
 {
     return m_element_indices;
 }
 
-muda::CBufferView<Float> FEM3DExtraConstitution::element_energies() const noexcept
+cuda_tool::CBufferView<Float> FEM3DExtraConstitution::element_energies() const noexcept
 {
     return m_element_energies;
 }
 
-muda::CDoubletVectorView<Float, 3> FEM3DExtraConstitution::element_gradients() const noexcept
+cuda_tool::CDoubletVectorView<Float, 3> FEM3DExtraConstitution::element_gradients() const noexcept
 {
     return m_element_gradients;
 }
 
-muda::CTripletMatrixView<Float, 3> FEM3DExtraConstitution::element_hessians() const noexcept
+cuda_tool::CTripletMatrixView<Float, 3> FEM3DExtraConstitution::element_hessians() const noexcept
 {
     return m_element_hessians;
 }

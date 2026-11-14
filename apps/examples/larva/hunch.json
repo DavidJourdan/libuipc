@@ -11,5 +11,6 @@
     "muscle_passive": 20000.0,
     "ground_height": -0.001,
     "ground": true,
-    "d_hat": 0.00002
+    "d_hat": 2e-05,
+    "kappa_eval_scale": 6.29e-12
 }

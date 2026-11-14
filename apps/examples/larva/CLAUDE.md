@@ -121,6 +121,7 @@ frame 0) to `segment_lengths.csv` every frame.
 | `gravity` | bool; along −y |
 | `ground`, `ground_height` | Add infinite half-plane floor at that height |
 | `d_hat` | IPC contact activation distance |
+| `kappa_eval_scale` | Sets `contact/adaptive/kappa_eval_scale`. Upstream now clamps contact kappa into a scene-adaptive corridor (Stiff-GIPC); without this key the 1.0_GPa default is clamped to ~1.6e4, which is ~4x slower (PCG needs ~2.7x more iterations) and softer. `6.29e-12` moves the corridor to [1e7, 1e9], restoring the pre-merge stiffness and speed. Both `drop.json` and `hunch.json` must use the same value (the settled pose depends on it). |
 | `youngs_modulus`, `poisson_ratio` | StableNeoHookean parameters |
 | `muscle_passive` | Passive muscle stiffness |
 | `muscle_active` | Active modulus scale (activations are multiplied by it) |

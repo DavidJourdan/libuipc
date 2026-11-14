@@ -1,0 +1,203 @@
+# Rules — Owner-Mandated Working Agreements
+
+Rules the project owner (the user) has explicitly laid down. They override
+habit and generic best practice. When one applies to your task, follow it;
+when a rule is marked task-scoped, do not generalize it.
+
+Standing rule for this file: **whenever the owner sets or changes a rule,
+record it here in the same commit.**
+
+## Change discipline
+
+1. **Commit to the current working branch only.** Never open a PR to (or
+   push to) the default branch (`main`) unless the owner explicitly says
+   so. (Set 2026-08-23; current working branch at the time:
+   `refactor-main`.)
+2. **Commit in stages, push without asking.** During multi-step work,
+   commit each completed stage separately (clear rollback points) and push
+   directly — no per-commit confirmation. (Set 2026-08-23.)
+3. **Minimal diffs**: make the smallest change that achieves the goal;
+   reuse the project's existing algorithm/utility code instead of
+   introducing parallel implementations; no opportunistic refactors,
+   renames, or cleanups outside the task's scope.
+4. **Keep agent_docs current in the same change.** Any update that changes
+   structure, workflow, conventions, build, or behavior must update the
+   matching doc (and `handoff.md` / `09-known-issues-and-roadmap.md` when
+   it closes or opens work) **in the same commit**.
+5. **Commit sample changes directly to `libuipc-samples/main`.** Do not use an
+   intermediate samples branch unless the owner explicitly requests one. When
+   the shared submodule worktree contains unrelated local edits, use a clean
+   worktree to update `main` and never include those edits. (Set 2026-09-07.)
+
+## Language
+
+4. **English only in repo artifacts**: documentation, code comments, commit
+   messages. (The conversation language stays whatever the owner uses.)
+
+## Documentation scope
+
+5. **Demo showcases belong on the project homepage, not in the technical
+   documentation.** Keep video/demo catalogues in the root README or project
+   website; keep `docs/` focused on tutorials, reference, specifications,
+   build guidance, and development documentation. The documentation must
+   expose a global link back to the project repository. (Set 2026-08-24.)
+   Scene-configuration reference material must state every registered key's
+   default, unit, effective-value rule, and valid domain/selector where one is
+   defined. Representative simulation tutorials must cover rigid bodies, FEM,
+   cloth, rigid-soft coupling, and contact in both C++ and Python, verified
+   against `libuipc-samples`, public APIs/bindings, and the consuming backend
+   implementation. Educational examples are documentation; showcase/demo
+   catalogues remain homepage-only. (Expanded 2026-08-24.)
+
+## Build system
+
+6. **clang-format-18 before every C++ commit/PR**: run
+   `python scripts/format_changed.py` (formats the C++ files changed vs the
+   base ref, CI's exact selection) or `--check` for a dry run. CI rejects
+   non-conforming diffs; the pinned local formatter is
+   `output/venv_clangfmt/Scripts/clang-format.exe` (18.1.8, same major as
+   CI's clang-format-18).
+7. **CMake and XMake stay in sync**: every build-affecting change (sources,
+   flags, dependencies, pins) must be applied to both build systems, even
+   if only one can be verified locally.
+8. **No ccache.** It was integrated once and the owner had it reverted; do
+   not re-introduce it (or similar compiler-cache layers) without an
+   explicit request.
+
+- **Preserve the existing pyuipc uninstall-first policy.** The early removal
+  of the old installed package in the build/package workflow is intentional
+  and explicitly required by the owner. Do not classify that ordering as a
+  defect or remove/postpone the step without a new owner request. This policy
+  is separate from checking that staging cleanup cannot delete source files.
+  (Confirmed 2026-09-16.)
+
+- **Keep automatic Python dependency setup for direct CMake builds.** Reuse
+  importable modules and install missing ones with the selected interpreter's
+  pip. Do not replace this convenience with unconditional check-only behavior.
+  Scikit-build-managed builds use declared build requirements; callers using
+  --no-build-isolation provide those requirements themselves. (Confirmed 2026-09-16.)
+
+- **Use only the embedded C++ METIS target.** Mesh partitioning must use
+  `src/geometry/metis/` through `uipc_metis`; do not restore separate
+  `external/METIS` or `external/GKlib` source trees or targets. Keep the CMake
+  and XMake source boundary equivalent. (Set 2026-09-03.)
+
+## Geometry
+
+- **Native tetrahedralization belongs in `src/geometry/tetrahedralization/`.**
+  Provide strict surface preservation and quality-oriented modes. Strict mode
+  must keep original vertices, coordinates and triangle connectivity, with no
+  boundary subdivision. Construct/retain a conservative valid mesh when quality
+  optimization cannot improve it; do not return a changed boundary or fail merely
+  because optimization did not succeed. (Set and clarified 2026-09-05.)
+
+## CUDA backend
+
+9. **Raw kernels only**: business GPU code is written as named
+   `__global__` functions with `<<<>>>` launches — no lambda kernels, no
+   ParallelFor-style wrappers.
+10. **`cuda_tool` is the only device utility layer and must not contain
+   muda** (no vendored copy, no submodule, no compat header). Keep
+   cuda_tool minimal: no primitive without an in-tree user.
+11. **Eigen stays** as the host/device small-matrix dependency. (A
+   replacement experiment — geigen under `src/math/` — was tried and
+   deliberately reverted; do not resurrect it without an explicit request.)
+
+12. **Use CUB, not Thrust, for new or modified CUDA bulk algorithms.** CUB
+   temporary storage must be persistent and reused (normally through
+   `cuda_tool`'s per-stream workspace); never allocate/free CUB scratch on
+   every call. (Set 2026-08-25.)
+
+13. **Make CUDA buffer growth semantics explicit.** Keep `resize()` for
+   value-initialized state. Use `resize_discard()` only for output that the
+   following kernel/copy/CUB call completely regenerates, and use
+   `resize_preserve()` only when the old logical range must survive but the new
+   range may remain uninitialized. Growth capacity must be based on the latest
+   requirement with deliberate headroom; do not copy or initialize dead output
+   ranges merely to emulate `std::vector`. (Set 2026-08-30.)
+
+14. **Profile heterogeneous kernel fusion/splitting end to end.** Static
+    register or stack reductions do not prove a speedup. In particular, keep
+    IPC simplex PT/EE/PE/PP Hessian assembly in one launch unless both the
+    kernel profile and enclosing DyTopo timer prove a split is faster: rare
+    PT/EE threads are expensive and overlap the dominant PE population in the
+    fused launch. Compile-time specialization of a uniform mode such as
+    `gradient_only` is preferred when it removes dead work without serializing
+    stencil families. (Set 2026-08-30.)
+
+15. **Use pipeline-specific parallel-EE handling.** AL-IPC never classifies
+    parallel EE pairs: both normal and frictional contact use the shared
+    negative disabled threshold, making `need_mollify()` false and routing all
+    AL pairs through their ordinary EE paths. Standard IPC uses the positive
+    `1e-3` coefficient. Its normal-contact path evaluates the complete
+    mollified energy, gradient, and Hessian for detected parallel pairs; its
+    friction path skips detected parallel pairs. Do not make `need_mollify()`
+    globally constant. (Set 2026-09-03; refined 2026-09-03.)
+
+16. **Do not serialize or impose fixed-order floating-point accumulation merely
+    to eliminate run-to-run rounding differences.** Preserve the existing parallel
+    architecture and efficiency. Small numerical differences caused solely by
+    rounding under different valid atomic-add accumulation orders are expected,
+    not numerical correctness defects. Distinguish permitted atomic arrival-order
+    variation from violations of required parallel execution dependencies. A
+    correctness fix must address a demonstrated algorithmic error or an actual
+    concurrency/synchronization defect (for example, lost contributions, data
+    races, missing synchronization, out-of-bounds access or uninitialized reads).
+    Do not add sorting, fixed-order reductions or serialization merely to obtain
+    bitwise reproducibility without an explicit requirement. (Set and clarified
+    2026-09-11.)
+
+## Task-scoped (recorded for context, not general policy)
+
+- 2026-10-03 audit follow-up: prioritize the fourth proposed stage, a matching
+  source/runtime performance baseline followed by measured optimizations. Defer
+  the first three audit-remediation stages; do not fold their correctness,
+  interface, or Blender changes into this performance task. (Set 2026-10-03.)
+
+- PR #494 integration: preserve the contributor's original commits through
+  merge commits in our repository, append our scoped adjustments, then merge
+  into main after validation. Do not modify the contributor's fork. Retain
+  dependency declarations and shared stub generation; defer the added XMake
+  editable route and custom backend shim. (Set 2026-09-16.)
+
+- 2026-09-11 project review: inspect implementation, frontend design, public APIs
+  and documentation; update the documentation and record findings, but do not
+  implement fixes or optimizations during this audit. Distinguish confirmed issues
+  from risks/proposals and keep unrelated work unchanged.
+
+- Dining-scene reconstruction: ground is `z = 0`; tabletop objects may begin
+  separated and suspended, with final stacking and tablecloth drape obtained
+  through libuipc gravity/contact simulation, not manually posed final geometry.
+  (Set 2026-09-05.)
+
+- Blender integration: use `spiriMirror` for the new extension's copyright
+  attribution and maintainer. (Set 2026-09-05.)
+
+- Blender cloth parameters: stretch, shear and bending each have independent
+  Young's modulus and Poisson ratio controls. Preserve the previous shared
+  Poisson value when loading old scenes; changing one channel must not change
+  either of the others. Keep the existing full-thickness `2r` material formulas.
+  (Set 2026-09-10.)
+
+- 2026-10-19 material calibration: correct the Discrete Shells formula-derived
+  hinge coefficient to `kappa=D/2=E*(2r)^3/[24*(1-nu^2)]`, retaining full thickness
+  `h=2r` and the raw-coefficient overload. This supersedes the earlier denominator
+  12 convention for cloth bending. Audit Stable Neo-Hookean parameter settings
+  after the bending correction.
+  Follow-up: correct SNK1's conversion to match physical input moduli, then
+  inspect the full cloth bending energy, reference geometry and solver scaling.
+
+- 2026-10-20 directional cloth: preserve the existing Baraff-Witkin APIs and add
+  independent a/b stretch coefficients through separate ElasticModuli2D inputs,
+  keeping shear independent. Missing b overrides retain shared legacy behavior;
+  reapplying an old API restores shared stretch. Add a corresponding cloth
+  example under libuipc-samples/examples. These E/nu inputs retain the existing
+  coefficient convention without adding physical Poisson coupling.
+
+- During the Stiff-GIPC performance-alignment work: "when a design choice
+  is uncertain, follow Stiff-GIPC's algorithm design" — that applied to
+  that effort (and its evidence lives in `handoff.md`), not to unrelated
+  features.
+- During CI watch duty: "you confirm all operations yourself" — scoped to
+  that autonomous monitoring task; normal confirmation rules apply
+  elsewhere.

@@ -20,18 +20,17 @@ class DyTopoEffectLineSearchReporter final : public LineSearchReporter
 
         SimSystemSlot<GlobalDyTopoEffectManager> global_dytopo_effect_manager;
 
-        muda::DeviceVar<Float>    energy;
-        muda::DeviceBuffer<Float> energies;
-        Float                     reserve_ratio = 1.5;
+        cuda_tool::DeviceBuffer<Float> energies;
+        Float                          reserve_ratio = 1.5;
 
         template <typename T>
-        void loose_resize(muda::DeviceBuffer<T>& buffer, SizeT size)
+        void loose_resize(cuda_tool::DeviceBuffer<T>& buffer, SizeT size)
         {
             if(size > buffer.capacity())
             {
-                buffer.reserve(size * reserve_ratio);
+                buffer.reserve_discard(size * reserve_ratio);
             }
-            buffer.resize(size);
+            buffer.resize_discard(size);
         }
     };
 

@@ -24,13 +24,32 @@ cd libuipc
 xmake f -c
 ```
 
+The default build includes the CUDA backend, examples, and tests. Optional
+modules are explicit and disabled by default:
+
+```shell
+# Enable either or both optional libraries.
+xmake f --usd=true --vdb=true -c
+
+# CPU/interface-only configuration (the none backend still builds).
+xmake f --backend_cuda=false -c
+
+# Lean CUDA build: omit legacy comparison/alternate broad-phase filters.
+xmake f --cuda_legacy_collision=false -c
+```
+
+`--usd=true` resolves OpenUSD 25.08 or newer, and `--vdb=true` resolves a shared
+OpenVDB package. XMake's compiler cache is disabled by project policy; use normal
+incremental builds rather than enabling ccache externally.
+
 ## Troubleshooting
 
 ### out of memory
 
 Xmake uses a lot of process for parallel compilation in order to accelerate the compilation task. However, nvcc will consume a lot of memory, thus will eventually cause an OOM
 
-✅ Set the multi-process manurally, e.g. `xmake -j8` to set 8 parallel compilation jobs
+Set the multi-process count manually, for example `xmake -j8` for eight parallel
+compilation jobs.
 
 
 ## dev in uv
@@ -38,9 +57,16 @@ Xmake uses a lot of process for parallel compilation in order to accelerate the 
 Use [uv](https://docs.astral.sh/uv/) to manage a virtual environment for Python development. The following steps configure xmake with Python binding support, create a virtual environment, build the project, and package the Python wheel.
 
 ```shell
-uv venv --python 3.11
-source venv/bin/activate
+uv venv --seed --python 3.12 .venv
+source .venv/bin/activate
 xmake f --pybind=true --python_system=true --python_version=3.12.x -c
 xmake build -j8
 xmake pack -v
 ```
+
+Packaging invokes `scripts/pyuipc_stubgen.py`, shared with CMake, to generate
+the complete `uipc` stub tree at the staged package root. Missing stub-generation
+dependencies (pybind11-stubgen, numpy, typing_extensions) are installed with
+`uv pip --python` using the Python selected by the packaging step.
+See [Python build environments](./dev_in_uv.md) for the CMake/pip dependency
+distinction. This workflow does not add `builder=xmake` or `python_editable`.

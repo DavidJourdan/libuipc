@@ -1,0 +1,184 @@
+# Cloth and Thin-Shell Scenes
+
+Cloth is a triangle `SimplicialComplex` with vertex degrees of freedom. A
+membrane constitution supplies in-plane stretch/shear behavior and mass;
+`DiscreteShellBending` is an optional extra constitution for resistance to
+folding. Applying bending alone does not create a complete cloth model.
+
+## Constitution stack
+
+| Layer | Example API | Purpose |
+| --- | --- | --- |
+| Triangle topology | `trimesh(vertices, triangles)` | Rest surface and vertex state. |
+| Collision surface | `label_surface(mesh)` | Marks the explicit surface used by contact. |
+| Membrane | `StrainLimitingBaraffWitkinShell.apply_to(...)` | Stretch, shear, density, thickness, and strain-rate control. |
+| Bending, optional | `DiscreteShellBending.apply_to(mesh, E, nu)` | Interior-edge bending stiffness computed from membrane thickness. |
+| Pins | `mesh.vertices()/is_fixed` | Per-vertex fixed state. |
+| Contact material | `ContactElement.apply_to(mesh)` | Friction/resistance pair identity. |
+
+The membrane must be applied before the formula-based bending overload. The
+bending implementation reads the one-sided thickness radius $r$ from the
+vertex `thickness` attribute. With full material thickness $h=2r$, it evaluates
+
+$$
+\kappa = \frac{D}{2} = \frac{E h^3}{24(1-\nu^2)}
+  = \frac{E(2r)^3}{24(1-\nu^2)}.
+$$
+
+The hinge energy has no extra $1/2$, so its coefficient $\kappa$ is half the
+classical flexural rigidity $D$, in N m. See the
+[bending specification](../specification/constitutions/discrete_shell_bending.md)
+for the physical calibration and migration from the previous factor of two.
+
+The raw overload `apply_to(mesh, bending_stiffness)` retains its legacy numeric
+default, but the supplied value is $\kappa$ directly in the Discrete Shells
+edge energy; it is neither per-area nor derived from thickness.
+
+## Complete pinned-cloth scene
+
+This minimal mesh has two triangles, one shared bending edge, two pinned top
+vertices, and ground contact. It is intentionally educational rather than a
+visual demo; production cloth needs enough resolution for the desired folds.
+
+=== "C++"
+
+    ```cpp
+    --8<-- "docs/tutorial/code/cloth.cpp"
+    ```
+
+=== "Python"
+
+    ```python
+    --8<-- "docs/tutorial/code/cloth.py"
+    ```
+
+The two-modulus overload deliberately separates stretch and shear. Here the
+stretch material uses `E = 50 kPa`, while the shear material uses `E = 0.5
+kPa`; their Poisson ratios are both `0.40`. This is useful when a woven sheet
+should resist extension much more strongly than in-plane shear.
+
+## Independent directional stretch
+
+Use the three-modulus overload to control stretch along the two existing
+rest-frame axes independently. All three moduli are required; the Python
+overload uses keywords to preserve the meaning of old positional calls.
+This standalone material-assignment example creates an XY triangle, where
+`a` is X and `b` is Y:
+
+=== "C++"
+
+    ```cpp
+    #include <uipc/uipc.h>
+    #include <uipc/constitution/strain_limiting_baraff_witkin.h>
+
+    int main()
+    {
+        using namespace uipc;
+        using namespace uipc::constitution;
+        const vector<Vector3> vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}};
+        const vector<Vector3i> triangles = {{0, 1, 2}};
+        auto mesh = geometry::trimesh(vertices, triangles);
+        StrainLimitingBaraffWitkinShell().apply_to(
+            mesh,
+            ElasticModuli2D::youngs_poisson(2e5, 0.30),
+            ElasticModuli2D::youngs_poisson(2e3, 0.25),
+            ElasticModuli2D::youngs_poisson(10, 0.25),
+            200, 0.001, 100);
+    }
+    ```
+
+=== "Python"
+
+    ```python
+    import numpy as np
+    from uipc.geometry import trimesh
+    from uipc.constitution import ElasticModuli2D, StrainLimitingBaraffWitkinShell
+
+    mesh = trimesh(
+        np.array([[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]),
+        np.array([[0, 1, 2]], dtype=np.int32),
+    )
+    StrainLimitingBaraffWitkinShell().apply_to(
+        mesh,
+        stretch_a_moduli=ElasticModuli2D.youngs_poisson(2e5, 0.30),
+        stretch_b_moduli=ElasticModuli2D.youngs_poisson(2e3, 0.25),
+        shear_moduli=ElasticModuli2D.youngs_poisson(10, 0.25),
+        mass_density=200, thickness=0.001, strain_rate=100,
+    )
+    ```
+
+Each direction uses $K_i=E_i(2r)/(1-\nu_i^2)$. These are coefficient controls:
+the nu inputs do not prescribe transverse contraction, and the energy has no
+normal-strain cross term. Shear and geometry can still couple the motion.
+Both directions share `strain_rate`; shear and bending retain their own
+parameters. Arbitrary UV/fiber orientations are not exposed by this API.
+
+Calling an old overload again restores shared stretch. Older saved scenes,
+which lack `stretch_stiffness_b`, also use shared stretch. The
+[`95_anisotropic_cloth`](https://github.com/spiriMirror/libuipc-samples/tree/main/examples/95_anisotropic_cloth)
+sample generates three cloth meshes and compares shared, a-stiff and b-stiff
+materials under equal biaxial traction, with GUI and headless validation.
+
+## Parameter meanings and defaults
+
+| Argument | Default in the convenience overload | Practical domain |
+| --- | --- | --- |
+| `moduli` | `E = 1 MPa`, `nu = 0.49` for both stretch and shear | Use `E > 0`; for ordinary isotropic 2D materials use `-1 < nu < 1`. |
+| `mass_density` | `200 kg/m^3` | Positive; surface mass scales as density times full thickness $2r$. |
+| `thickness` | `0.001 m` | Positive one-sided offset $r$ in scene length units; contact consumes $r$, while mass/stretch/bending use full thickness $2r$. |
+| `strain_rate` | `100` | Non-negative amplification coefficient; `0` removes the extra cubic extension penalty, while larger values progressively stiffen over-stretch. |
+
+The C++ and Python bindings expose the same convenience and separated-moduli
+overloads. The API excludes singular Poisson endpoints but does not centrally
+validate every physical parameter, so invalid negative values can survive
+scene assembly and fail later in a less obvious place.
+
+## Pinning and animated boundaries
+
+The example marks vertices fixed after the membrane is applied. Fixed state is
+per vertex, not per triangle. Pinning both endpoints of a top edge is enough
+for this four-vertex sheet; a real mesh should select a geometrically stable
+set of support vertices.
+
+For moving grippers or prescribed motion, do not overwrite positions after
+`world.init()`. Add a soft position constraint and update its animation
+attributes through the scene's animation/update path. The
+[`91_pinned_cloth`](https://github.com/spiriMirror/libuipc-samples/blob/main/examples/91_pinned_cloth/main.py)
+sample is the static-pin baseline.
+
+## Contact and self-collision
+
+The FEM base constitution sets `self_collision = 1` for cloth as well as
+volumetric FEM. It prevents different parts of the same sheet from passing
+through each other when global contact is enabled. The contact table still
+controls material pairs, and the cloth still needs `label_surface`.
+
+For cloth, inspect these values together:
+
+- one-sided `thickness` radius $r$ on vertices;
+- `contact/d_hat` or `contact/d_hat_relative`;
+- triangle size and aspect ratio;
+- `contact/eps_velocity` when friction is enabled; and
+- contact resistance, which is independent of membrane and bending stiffness.
+
+`d_hat` is a barrier activation distance, not a replacement for thickness.
+Excessive activation distance on a finely discretized sheet can create many
+more candidates and make the solve unnecessarily stiff.
+
+## Deeper examples and implementation evidence
+
+- cloth material and bending:
+  [`11_bunny_cloth`](https://github.com/spiriMirror/libuipc-samples/blob/main/examples/11_bunny_cloth/main.py)
+- multiple self-contacting sheets:
+  [`34_cloth_stack`](https://github.com/spiriMirror/libuipc-samples/blob/main/examples/34_cloth_stack/main.py)
+- pinned source-backed scene:
+  [`91_pinned_cloth`](https://github.com/spiriMirror/libuipc-samples/blob/main/examples/91_pinned_cloth/main.py)
+- C++ pin, bending, and MAS regressions:
+  [`19_shell_fixed_point.cpp`](https://github.com/spiriMirror/libuipc/blob/main/apps/tests/sim_case/19_shell_fixed_point.cpp),
+  [`33_discrete_shell_bending.cpp`](https://github.com/spiriMirror/libuipc/blob/main/apps/tests/sim_case/33_discrete_shell_bending.cpp),
+  and
+  [`60_fem_mas_cloth.cpp`](https://github.com/spiriMirror/libuipc/blob/main/apps/tests/sim_case/60_fem_mas_cloth.cpp)
+- public membrane and bending APIs:
+  [`strain_limiting_baraff_witkin.h`](https://github.com/spiriMirror/libuipc/blob/main/include/uipc/constitution/strain_limiting_baraff_witkin.h)
+  and
+  [`discrete_shell_bending.h`](https://github.com/spiriMirror/libuipc/blob/main/include/uipc/constitution/discrete_shell_bending.h)

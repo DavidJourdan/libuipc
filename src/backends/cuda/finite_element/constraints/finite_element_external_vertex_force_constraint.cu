@@ -20,12 +20,12 @@ void FiniteElementExternalVertexForceConstraint::do_init(FiniteElementAnimator::
     do_step(info);
 }
 
-muda::CBufferView<Vector3> FiniteElementExternalVertexForceConstraint::forces() const noexcept
+cuda_tool::CBufferView<Vector3> FiniteElementExternalVertexForceConstraint::forces() const noexcept
 {
     return m_impl.forces.view();
 }
 
-muda::CBufferView<IndexT> FiniteElementExternalVertexForceConstraint::vertex_ids() const noexcept
+cuda_tool::CBufferView<IndexT> FiniteElementExternalVertexForceConstraint::vertex_ids() const noexcept
 {
     return m_impl.vertex_ids.view();
 }
@@ -49,8 +49,13 @@ void FiniteElementExternalVertexForceConstraint::Impl::step(backend::WorldVisito
             UIPC_ASSERT(vertex_offset, "`backend_fem_vertex_offset` attribute not found");
             current_vertex_offset = vertex_offset->view().front();
 
-            auto is_constrained = sc.vertices().find<IndexT>(builtin::is_constrained);
-            UIPC_ASSERT(is_constrained, "`is_constrained` attribute not found");
+            auto is_constrained =
+                sc.vertices().find<IndexT>("external_force/is_constrained");
+            // Serialized geometries from older versions only have the shared mask.
+            // When both exist, the force-specific mask always takes precedence.
+            if(!is_constrained)
+                is_constrained = sc.vertices().find<IndexT>(builtin::is_constrained);
+            UIPC_ASSERT(is_constrained, "External force enable attribute not found; apply the external force constitution first");
             auto external_force = sc.vertices().find<Vector3>("external_force");
             UIPC_ASSERT(external_force, "`external_force` attribute not found");
 
@@ -67,6 +72,11 @@ void FiniteElementExternalVertexForceConstraint::Impl::step(backend::WorldVisito
             }
         });
 
+    // Always sync device buffers — even when empty.
+    // Without this, stale forces from a previous frame persist in the device
+    // buffer and get scatter-added every advance() call forever.
+    forces.resize(h_forces.size());
+    vertex_ids.resize(h_vertex_ids.size());
     if(!h_forces.empty())
     {
         forces.copy_from(h_forces);
