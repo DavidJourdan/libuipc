@@ -213,7 +213,7 @@ class StableNeoHookean3DFEMExporter final : public FEMExporter
     // ------------------------------------------------------------------
     void get_fem_energy(geometry::Geometry& energy_geo) override
     {
-        auto indices  = fem_constitution->element_indices();   // CBufferView<Vector4i>
+        auto indices = fem_constitution->element_indices();  // CBufferView<Vector4i>
         auto energies = fem_constitution->element_energies();  // CBufferView<Float>
 
         energy_geo.instances().resize(indices.size());

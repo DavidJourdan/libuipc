@@ -12,29 +12,28 @@ PyMuscle::PyMuscle(py::module& m)
         m, "Muscle", R"(Muscle constitution for a muscle material (Hill model).)");
 
     class_Muscle.def(py::init<const Json&>(),
-                               py::arg("config") = Muscle::default_config(),
-                               R"(Create a Muscle constitution.
+                     py::arg("config") = Muscle::default_config(),
+                     R"(Create a Muscle constitution.
 Args:
     config: Configuration dictionary (optional, uses default if not provided).)");
 
     class_Muscle.def_static("default_config",
-                                      &Muscle::default_config,
-                                      R"(Get the default muscle configuration.
+                            &Muscle::default_config,
+                            R"(Get the default muscle configuration.
 Returns:
     dict: Default configuration dictionary.)");
 
-    class_Muscle.def("apply_to",
-                               [](Muscle& self,
-                                  SimplicialComplex& sc,
-                                  py::array_t<Float> direction,
-                                  Float passive_modulus,
-                                  Float active_modulus)
-                               { self.apply_to(sc, to_matrix<Vector3>(direction), passive_modulus, active_modulus); },
-                               py::arg("sc"),
-                               py::arg("direction") = as_numpy(Vector3(0,0,0)),
-                               py::arg("passive_modulus") = 120.0_kPa,
-                               py::arg("active_modulus") = 120.0_kPa,
-                               R"(Apply muscle constitution to a simplicial complex.
+    class_Muscle.def(
+        "apply_to",
+        [](Muscle& self, SimplicialComplex& sc, py::array_t<Float> direction, Float passive_modulus, Float active_modulus)
+        {
+            self.apply_to(sc, to_matrix<Vector3>(direction), passive_modulus, active_modulus);
+        },
+        py::arg("sc"),
+        py::arg("direction")       = as_numpy(Vector3(0, 0, 0)),
+        py::arg("passive_modulus") = 120.0_kPa,
+        py::arg("active_modulus")  = 120.0_kPa,
+        R"(Apply muscle constitution to a simplicial complex.
 Args:
     sc: SimplicialComplex to apply to.
     direction: orientation of the anisotropic material

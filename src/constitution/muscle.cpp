@@ -36,7 +36,8 @@ void Muscle::apply_to(geometry::SimplicialComplex& sc, Float passive_modulus, Fl
 
     auto direction_attr = sc.tetrahedra().find<Vector3>("direction");
     if(!direction_attr)
-        direction_attr = sc.tetrahedra().create<Vector3>("direction", Vector3(0.,0.,0.));
+        direction_attr =
+            sc.tetrahedra().create<Vector3>("direction", Vector3(0., 0., 0.));
 }
 
 void Muscle::apply_to(geometry::SimplicialComplex& sc,

@@ -78,11 +78,11 @@ SimplicialComplex SimplicialComplexIO::read_msh(std::string_view file_name)
         throw GeometryIOError{fmt::format("File does not exist: {}", file_name)};
     }
 
-    RowMajorMatrix<double> doubleX;
-    RowMajorMatrix<Float>  X;
-    RowMajorMatrix<IndexT> F, T;
-    VectorXi               TriTag, TetTag;
-    std::vector<std::string> XFields, EFields;
+    RowMajorMatrix<double>             doubleX;
+    RowMajorMatrix<Float>              X;
+    RowMajorMatrix<IndexT>             F, T;
+    VectorXi                           TriTag, TetTag;
+    std::vector<std::string>           XFields, EFields;
     std::vector<RowMajorMatrix<Float>> XF, TriF, TetF;
     if(!igl::readMSH(string{file_name}, doubleX, F, T, TriTag, TetTag, XFields, XF, EFields, TriF, TetF))
     {
@@ -121,7 +121,7 @@ SimplicialComplex SimplicialComplexIO::read_msh(std::string_view file_name)
         std::cout << field << "\n";
         if(XF[i].cols() == 1)
         {
-            auto attribute_ptr = sc.vertices().create<Float>(field);
+            auto             attribute_ptr = sc.vertices().create<Float>(field);
             std::span<Float> attribute_view = view(*attribute_ptr);
             for(int j = 0; j < XF[i].rows(); ++j)
                 attribute_view[j] = XF[i](j);
@@ -239,9 +239,9 @@ bool obj_read_linemesh_(const std::string&                str,
         else if(type == "f")
         {
             UIPC_ASSERT_THROW(false,
-                        "Found face in line mesh .obj file at line {}. "
-                        "This is not a pure line mesh.",
-                        line_number);
+                              "Found face in line mesh .obj file at line {}. "
+                              "This is not a pure line mesh.",
+                              line_number);
         }
     }
 

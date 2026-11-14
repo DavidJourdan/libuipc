@@ -43,15 +43,15 @@ int main()
     Scene scene{config};
 
     // create constitution and contact model
-    StableNeoHookean snh_constitution;
-    Muscle           muscle_constitution;
+    StableNeoHookean       snh_constitution;
+    Muscle                 muscle_constitution;
     SoftPositionConstraint spc;
 
     // create a regular tetrahedron
-    vector<Vector3>  Vs = {Vector3{0, 0, 1},
-                           Vector3{0, -1, 0},
-                           Vector3{-std::sqrt(3) / 2, 0, -0.5},
-                           Vector3{std::sqrt(3) / 2, 0, -0.5}};
+    vector<Vector3> Vs = {Vector3{0, 0, 1},
+                          Vector3{0, -1, 0},
+                          Vector3{-std::sqrt(3) / 2, 0, -0.5},
+                          Vector3{std::sqrt(3) / 2, 0, -0.5}};
 
     Matrix3x3 DmInv = Ds(Vs[0], Vs[1], Vs[2], Vs[3]).inverse();
 
@@ -87,21 +87,21 @@ int main()
         [](Animation::UpdateInfo& info)
         {
             auto geo_slots = info.geo_slots();
-            auto geo = geo_slots[0]->geometry().as<SimplicialComplex>();
+            auto geo       = geo_slots[0]->geometry().as<SimplicialComplex>();
             auto rest_geo_slots = info.rest_geo_slots();
             auto rest_geo = rest_geo_slots[0]->geometry().as<SimplicialComplex>();
 
             auto is_constrained = geo->vertices().find<IndexT>(builtin::is_constrained);
             auto is_constrained_view = view(*is_constrained);
             auto aim_position = geo->vertices().find<Vector3>(builtin::aim_position);
-            auto aim_position_view = view(*aim_position);
+            auto aim_position_view  = view(*aim_position);
             auto rest_position_view = rest_geo->positions().view();
 
-            is_constrained_view[1]   = 1;
+            is_constrained_view[1] = 1;
 
-            auto t = info.dt() * info.frame();
+            auto t     = info.dt() * info.frame();
             auto theta = 2 * std::numbers::pi * t;
-            auto y = -std::sin(theta);
+            auto y     = -std::sin(theta);
 
             aim_position_view[1] = rest_position_view[1] + Vector3::UnitY() * y;
         });
@@ -133,8 +133,10 @@ int main()
     auto fem_state_accessor = world.features().find<FiniteElementStateAccessorFeature>();
 
     auto fem_state_geo = fem_state_accessor->create_geometry();
-    auto fem_positions = fem_state_geo.vertices().create<Vector3>(builtin::position, Vector3::Zero());
-    auto fem_velocities = fem_state_geo.vertices().create<Vector3>(builtin::velocity, Vector3::Zero());
+    auto fem_positions =
+        fem_state_geo.vertices().create<Vector3>(builtin::position, Vector3::Zero());
+    auto fem_velocities =
+        fem_state_geo.vertices().create<Vector3>(builtin::velocity, Vector3::Zero());
 
     for(int i = 1; i < 100; i++)
     {
@@ -151,9 +153,9 @@ int main()
         fem_system->fem_gradient(muscle_constitution.uid(), muscle_geo);
         fem_system->fem_hessian(muscle_constitution.uid(), hessian_geo);
 
-        auto snh_energy_attr = snh_geo.instances().find<Float>("energy");
+        auto snh_energy_attr    = snh_geo.instances().find<Float>("energy");
         auto muscle_energy_attr = muscle_geo.instances().find<Float>("energy");
-        auto muscle_grad_attr = muscle_geo.instances().find<Vector3>("grad");
+        auto muscle_grad_attr   = muscle_geo.instances().find<Vector3>("grad");
         auto muscle_hessian_attr = hessian_geo.instances().find<Matrix3x3>("hess");
 
         auto energies = view(*muscle_energy_attr);
@@ -161,11 +163,11 @@ int main()
         auto V = view(*fem_state_geo.vertices().find<Vector3>(builtin::position));
 
         Matrix3x3 F = Ds(V[0], V[1], V[2], V[3]) * DmInv;
-        Vector3 a {0,1,0};
-        Float lambda = (F * a).norm();
+        Vector3   a{0, 1, 0};
+        Float     lambda = (F * a).norm();
 
-        Vector3 force = -view(*muscle_grad_attr)[1];
-        Matrix3x3 hess = view(*muscle_hessian_attr)[4];
+        Vector3   force = -view(*muscle_grad_attr)[1];
+        Matrix3x3 hess  = view(*muscle_hessian_attr)[4];
 
         // auto rows  = view(*hessian_geo.instances().find<IndexT>("i"));
         // auto cols  = view(*hessian_geo.instances().find<IndexT>("j"));
@@ -177,13 +179,27 @@ int main()
                    i,
                    lambda,
                    view(*muscle_energy_attr)[0],
-                   force(0), force(1), force(2),
-                   hess(0, 0), hess(0, 1), hess(0, 2),
-                   hess(1, 0), hess(1, 1), hess(1, 2),
-                   hess(2, 0), hess(2, 1), hess(2, 2),
+                   force(0),
+                   force(1),
+                   force(2),
+                   hess(0, 0),
+                   hess(0, 1),
+                   hess(0, 2),
+                   hess(1, 0),
+                   hess(1, 1),
+                   hess(1, 2),
+                   hess(2, 0),
+                   hess(2, 1),
+                   hess(2, 2),
                    V[1][1]);
 
-        csv << fmt::format("{}, {}, {}, {}, {}, {}\n", i, lambda, view(*muscle_energy_attr)[0], force(1), V[1][1], hess(1,1));
+        csv << fmt::format("{}, {}, {}, {}, {}, {}\n",
+                           i,
+                           lambda,
+                           view(*muscle_energy_attr)[0],
+                           force(1),
+                           V[1][1],
+                           hess(1, 1));
 
         // topos    = np.array(geo_e.instances().find("topo").view())    # (N_tet, 4)
         // energies = np.array(geo_e.instances().find("energy").view())  # (N_tet,)
@@ -199,5 +215,4 @@ int main()
         world.retrieve();
         sio.write_surface(fmt::format("{}scene_surface{}.obj", this_output_path, i));
     }
-
 }

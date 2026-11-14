@@ -26,10 +26,10 @@ class FEM3DExtraConstitution : public FiniteElementExtraConstitution
   public:
     using FiniteElementExtraConstitution::FiniteElementExtraConstitution;
 
-    muda::CBufferView<Vector4i>        element_indices()   const noexcept;
-    muda::CBufferView<Float>           element_energies()  const noexcept;
+    muda::CBufferView<Vector4i>        element_indices() const noexcept;
+    muda::CBufferView<Float>           element_energies() const noexcept;
     muda::CDoubletVectorView<Float, 3> element_gradients() const noexcept;
-    muda::CTripletMatrixView<Float, 3> element_hessians()  const noexcept;
+    muda::CTripletMatrixView<Float, 3> element_hessians() const noexcept;
 
     class BuildInfo
     {
@@ -77,9 +77,9 @@ class FEM3DExtraConstitution : public FiniteElementExtraConstitution
     class ComputeEnergyInfo : public BaseInfo
     {
       public:
-        ComputeEnergyInfo(FEM3DExtraConstitution*              impl,
+        ComputeEnergyInfo(FEM3DExtraConstitution* impl,
                           FiniteElementExtraConstitution::ComputeEnergyInfo* base_info,
-                          Float                                              dt)
+                          Float dt)
             : BaseInfo(impl, dt)
             , m_base_info(base_info)
         {
@@ -94,34 +94,34 @@ class FEM3DExtraConstitution : public FiniteElementExtraConstitution
     class ComputeGradientHessianInfo : public BaseInfo
     {
       public:
-        ComputeGradientHessianInfo(
-            FEM3DExtraConstitution*                                       impl,
-            FiniteElementExtraConstitution::ComputeGradientHessianInfo*   base_info,
-            Float                                                         dt)
+        ComputeGradientHessianInfo(FEM3DExtraConstitution* impl,
+                                   FiniteElementExtraConstitution::ComputeGradientHessianInfo* base_info,
+                                   Float dt)
             : BaseInfo(impl, dt)
             , m_base_info(base_info)
         {
         }
 
-        auto gradient_only() const noexcept { return m_base_info->gradient_only(); }
-        auto gradients()     const noexcept { return m_base_info->gradients(); }
-        auto hessians()      const noexcept { return m_base_info->hessians(); }
+        auto gradient_only() const noexcept
+        {
+            return m_base_info->gradient_only();
+        }
+        auto gradients() const noexcept { return m_base_info->gradients(); }
+        auto hessians() const noexcept { return m_base_info->hessians(); }
 
       private:
         FiniteElementExtraConstitution::ComputeGradientHessianInfo* m_base_info = nullptr;
     };
 
   protected:
-    virtual void do_build(BuildInfo& info)                                     = 0;
-    virtual void do_compute_energy(ComputeEnergyInfo& info)                    = 0;
+    virtual void do_build(BuildInfo& info)                  = 0;
+    virtual void do_compute_energy(ComputeEnergyInfo& info) = 0;
     virtual void do_compute_gradient_hessian(ComputeGradientHessianInfo& info) = 0;
 
   private:
-    virtual void do_build(
-        FiniteElementExtraConstitution::BuildInfo& info) override final;
+    virtual void do_build(FiniteElementExtraConstitution::BuildInfo& info) override final;
 
-    virtual void do_compute_energy(
-        FiniteElementExtraConstitution::ComputeEnergyInfo& info) override final;
+    virtual void do_compute_energy(FiniteElementExtraConstitution::ComputeEnergyInfo& info) override final;
 
     virtual void do_compute_gradient_hessian(
         FiniteElementExtraConstitution::ComputeGradientHessianInfo& info) override final;

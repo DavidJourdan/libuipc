@@ -72,36 +72,36 @@ void Muscle::do_compute_energy(FEM3DExtraConstitution::ComputeEnergyInfo& info)
     ParallelFor()
         .file_line(__FILE__, __LINE__)
         .apply(info.indices().size(),
-                [passive_coeffs = passive_coeffs.cviewer().name("passive_coeffs"),
+               [passive_coeffs = passive_coeffs.cviewer().name("passive_coeffs"),
                 active_coeffs = active_coeffs.cviewer().name("active_coeffs"),
-                directions = directions.cviewer().name("directions"),
-                energies   = info.energies().viewer().name("energies"),
-                indices    = info.indices().viewer().name("indices"),
-                xs         = info.xs().viewer().name("xs"),
-                Dm_invs    = info.Dm_invs().viewer().name("Dm_invs"),
-                volumes    = info.rest_volumes().viewer().name("volumes"),
-                dt         = info.dt()] __device__(int I)
-                {
-                    const Vector4i&  tet        = indices(I);
-                    const Matrix3x3& Dm_inv     = Dm_invs(I);
-                    Float            mu_passive = passive_coeffs(I);
-                    Float            mu_active  = active_coeffs(I);
-                    Vector3          direction  = directions(I);
+                directions    = directions.cviewer().name("directions"),
+                energies      = info.energies().viewer().name("energies"),
+                indices       = info.indices().viewer().name("indices"),
+                xs            = info.xs().viewer().name("xs"),
+                Dm_invs       = info.Dm_invs().viewer().name("Dm_invs"),
+                volumes       = info.rest_volumes().viewer().name("volumes"),
+                dt            = info.dt()] __device__(int I)
+               {
+                   const Vector4i&  tet        = indices(I);
+                   const Matrix3x3& Dm_inv     = Dm_invs(I);
+                   Float            mu_passive = passive_coeffs(I);
+                   Float            mu_active  = active_coeffs(I);
+                   Vector3          direction  = directions(I);
 
-                    const Vector3& x0 = xs(tet(0));
-                    const Vector3& x1 = xs(tet(1));
-                    const Vector3& x2 = xs(tet(2));
-                    const Vector3& x3 = xs(tet(3));
+                   const Vector3& x0 = xs(tet(0));
+                   const Vector3& x1 = xs(tet(1));
+                   const Vector3& x2 = xs(tet(2));
+                   const Vector3& x3 = xs(tet(3));
 
-                    auto F = fem::F(x0, x1, x2, x3, Dm_inv);
+                   auto F = fem::F(x0, x1, x2, x3, Dm_inv);
 
-                    Float E_passive, E_active;
+                   Float E_passive, E_active;
 
-                    muscle_passive::E(E_passive, mu_passive, direction, F);
-                    muscle_active::E(E_active, mu_active, direction, F);
+                   muscle_passive::E(E_passive, mu_passive, direction, F);
+                   muscle_active::E(E_active, mu_active, direction, F);
 
-                    energies(I) = (E_passive + E_active) * dt * dt * volumes(I);
-                });
+                   energies(I) = (E_passive + E_active) * dt * dt * volumes(I);
+               });
 }
 
 void Muscle::do_compute_gradient_hessian(FEM3DExtraConstitution::ComputeGradientHessianInfo& info)
@@ -112,58 +112,58 @@ void Muscle::do_compute_gradient_hessian(FEM3DExtraConstitution::ComputeGradient
     ParallelFor()
         .file_line(__FILE__, __LINE__)
         .apply(info.indices().size(),
-                [passive_coeffs = passive_coeffs.cviewer().name("passive_coeffs"),
+               [passive_coeffs = passive_coeffs.cviewer().name("passive_coeffs"),
                 active_coeffs = active_coeffs.cviewer().name("active_coeffs"),
-                directions = directions.cviewer().name("directions"),
-                indices    = info.indices().viewer().name("indices"),
-                xs         = info.xs().viewer().name("xs"),
-                Dm_invs    = info.Dm_invs().viewer().name("Dm_invs"),
-                G3s        = info.gradients().viewer().name("gradients"),
-                H3x3s      = info.hessians().viewer().name("hessians"),
-                volumes    = info.rest_volumes().viewer().name("volumes"),
-                dt         = info.dt(),
+                directions    = directions.cviewer().name("directions"),
+                indices       = info.indices().viewer().name("indices"),
+                xs            = info.xs().viewer().name("xs"),
+                Dm_invs       = info.Dm_invs().viewer().name("Dm_invs"),
+                G3s           = info.gradients().viewer().name("gradients"),
+                H3x3s         = info.hessians().viewer().name("hessians"),
+                volumes       = info.rest_volumes().viewer().name("volumes"),
+                dt            = info.dt(),
                 gradient_only] __device__(int I) mutable
-                {
-                    const Vector4i&  tet        = indices(I);
-                    const Matrix3x3& Dm_inv     = Dm_invs(I);
-                    Float            mu_passive = passive_coeffs(I);
-                    Float            mu_active  = active_coeffs(I);
-                    Vector3          direction  = directions(I);
+               {
+                   const Vector4i&  tet        = indices(I);
+                   const Matrix3x3& Dm_inv     = Dm_invs(I);
+                   Float            mu_passive = passive_coeffs(I);
+                   Float            mu_active  = active_coeffs(I);
+                   Vector3          direction  = directions(I);
 
-                    const Vector3& x0 = xs(tet(0));
-                    const Vector3& x1 = xs(tet(1));
-                    const Vector3& x2 = xs(tet(2));
-                    const Vector3& x3 = xs(tet(3));
+                   const Vector3& x0 = xs(tet(0));
+                   const Vector3& x1 = xs(tet(1));
+                   const Vector3& x2 = xs(tet(2));
+                   const Vector3& x3 = xs(tet(3));
 
-                    auto F = fem::F(x0, x1, x2, x3, Dm_inv);
+                   auto F = fem::F(x0, x1, x2, x3, Dm_inv);
 
-                    auto Vdt2 = volumes(I) * dt * dt;
+                   auto Vdt2 = volumes(I) * dt * dt;
 
-                    Matrix3x3 dEdF_passive, dEdF_active;
-                    muscle_passive::dEdVecF(dEdF_passive, mu_passive, direction, F);
-                    muscle_active::dEdVecF(dEdF_active, mu_active, direction, F);
-                    auto VecdEdF = flatten(dEdF_passive + dEdF_active);
-                    VecdEdF *= Vdt2;
+                   Matrix3x3 dEdF_passive, dEdF_active;
+                   muscle_passive::dEdVecF(dEdF_passive, mu_passive, direction, F);
+                   muscle_active::dEdVecF(dEdF_active, mu_active, direction, F);
+                   auto VecdEdF = flatten(dEdF_passive + dEdF_active);
+                   VecdEdF *= Vdt2;
 
-                    Matrix9x12 dFdx = fem::dFdx(Dm_inv);
-                    Vector12   G    = dFdx.transpose() * VecdEdF;
+                   Matrix9x12 dFdx = fem::dFdx(Dm_inv);
+                   Vector12   G    = dFdx.transpose() * VecdEdF;
 
-                    DoubletVectorAssembler DVA{G3s};
-                    DVA.segment<StencilSize>(I * StencilSize).write(tet, G);
+                   DoubletVectorAssembler DVA{G3s};
+                   DVA.segment<StencilSize>(I * StencilSize).write(tet, G);
 
-                    if(gradient_only)
-                        return;
+                   if(gradient_only)
+                       return;
 
-                    Matrix9x9 ddEddF_passive, ddEddF_active;
-                    muscle_passive::ddEddVecF(ddEddF_passive, mu_passive, direction, F);
-                    muscle_active::ddEddVecF(ddEddF_active, mu_active, direction, F);
-                    Matrix9x9 ddEddF = ddEddF_passive + ddEddF_active;
-                    make_spd(ddEddF);
-                    ddEddF *= Vdt2;
-                    Matrix12x12 H = dFdx.transpose() * ddEddF * dFdx;
-                    TripletMatrixAssembler TMA{H3x3s};
-                    TMA.half_block<StencilSize>(I * HalfHessianSize).write(tet, H);
-                });
+                   Matrix9x9 ddEddF_passive, ddEddF_active;
+                   muscle_passive::ddEddVecF(ddEddF_passive, mu_passive, direction, F);
+                   muscle_active::ddEddVecF(ddEddF_active, mu_active, direction, F);
+                   Matrix9x9 ddEddF = ddEddF_passive + ddEddF_active;
+                   make_spd(ddEddF);
+                   ddEddF *= Vdt2;
+                   Matrix12x12            H = dFdx.transpose() * ddEddF * dFdx;
+                   TripletMatrixAssembler TMA{H3x3s};
+                   TMA.half_block<StencilSize>(I * HalfHessianSize).write(tet, H);
+               });
 }
 
 REGISTER_SIM_SYSTEM(Muscle);
@@ -176,10 +176,7 @@ class MuscleFEMExporter final : public FEMExporter
 
     SimSystemSlot<FEM3DExtraConstitution> fem_constitution;
 
-    U64 get_uid() const noexcept override
-    {
-        return Muscle::ConstitutionUID;
-    }
+    U64 get_uid() const noexcept override { return Muscle::ConstitutionUID; }
 
     void do_build(BuildInfo&) override
     {
@@ -195,7 +192,7 @@ class MuscleFEMExporter final : public FEMExporter
     // ------------------------------------------------------------------
     void get_fem_energy(geometry::Geometry& energy_geo) override
     {
-        auto indices  = fem_constitution->element_indices();   // CBufferView<Vector4i>
+        auto indices = fem_constitution->element_indices();  // CBufferView<Vector4i>
         auto energies = fem_constitution->element_energies();  // CBufferView<Float>
 
         energy_geo.instances().resize(indices.size());

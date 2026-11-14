@@ -30,7 +30,9 @@ Args:
     geometry: SimplicialComplex where muscle ids are stored in.)");
 
     class_MuscleControllerFeature.def(
-        "read_activations", [](MuscleControllerFeature& self, const std::unordered_map<int, std::vector<float>>& activations)
+        "read_activations",
+        [](MuscleControllerFeature&                           self,
+           const std::unordered_map<int, std::vector<float>>& activations)
         { self.read_activations(activations); },
         py::arg("activations"),
         R"(Read the dictionary of activation lists and convert it internally to an Eigen matrix
@@ -38,7 +40,8 @@ Args:
     activations: Dict of activation values for each muscle)");
 
     class_MuscleControllerFeature.def(
-        "update_next_frame", [](MuscleControllerFeature& self, geometry::SimplicialComplex& geo, int frame_id)
+        "update_next_frame",
+        [](MuscleControllerFeature& self, geometry::SimplicialComplex& geo, int frame_id)
         { self.update_next_frame(geo, frame_id); },
         py::arg("geometry"),
         py::arg("frame_id"),

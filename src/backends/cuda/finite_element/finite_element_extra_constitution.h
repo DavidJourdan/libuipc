@@ -106,7 +106,10 @@ class FiniteElementExtraConstitution : public SimSystem
         {
         }
 
-        auto gradient_only() const noexcept { return base_info->gradient_only(); }
+        auto gradient_only() const noexcept
+        {
+            return base_info->gradient_only();
+        }
         auto gradients() const noexcept { return base_info->gradients(); }
         auto hessians() const noexcept { return base_info->hessians(); }
 
@@ -126,7 +129,7 @@ class FiniteElementExtraConstitution : public SimSystem
 
     friend class FiniteElementExtraConstitutionDiffParmReporter;
     span<const FiniteElementMethod::GeoInfo> geo_infos() const noexcept;
-    FiniteElementMethod::Impl& fem() noexcept;
+    FiniteElementMethod::Impl&               fem() noexcept;
 
   private:
     friend class FiniteElementConstitutionLinearSubsystemReporter;

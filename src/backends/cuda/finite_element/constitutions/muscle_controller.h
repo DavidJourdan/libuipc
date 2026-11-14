@@ -25,7 +25,7 @@ class MuscleController final : public SimSystem
   private:
     friend class MuscleControllerFeatureOverrider;
     SimSystemSlot<Muscle> m_constitution;
-    void do_build() override;
+    void                  do_build() override;
     void copy_active_coeffs_from(geometry::SimplicialComplex& geo);
 };
 }  // namespace uipc::backend::cuda

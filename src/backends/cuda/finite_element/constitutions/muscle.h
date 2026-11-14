@@ -27,7 +27,7 @@ class Muscle final : public FEM3DExtraConstitution
     muda::DeviceBuffer<Float>   active_coeffs;
     muda::DeviceBuffer<Vector3> directions;
 
-    U64 get_uid() const noexcept override { return ConstitutionUID; }
+    U64  get_uid() const noexcept override { return ConstitutionUID; }
     void do_build(BuildInfo& info) override {}
     void do_report_extent(ReportExtentInfo& info) override;
     void do_init(FiniteElementExtraConstitution::FilteredInfo& info) override;

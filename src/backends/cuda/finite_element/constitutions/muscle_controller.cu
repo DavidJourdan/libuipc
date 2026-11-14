@@ -33,8 +33,7 @@ void MuscleController::do_build()
 void MuscleController::copy_active_coeffs_from(geometry::SimplicialComplex& geo)
 {
     auto attr = geo.tetrahedra().find<Float>("active_modulus");
-    UIPC_ASSERT(attr,
-                "[MuscleAccessor] Geometry has no 'active_modulus' attribute.");
+    UIPC_ASSERT(attr, "[MuscleAccessor] Geometry has no 'active_modulus' attribute.");
 
     auto attr_view = view(*attr);
     UIPC_ASSERT(attr_view.size() == m_constitution->active_coeffs.size(),
@@ -47,7 +46,6 @@ void MuscleController::copy_active_coeffs_from(geometry::SimplicialComplex& geo)
     // active_moduli.assign(attr_view.begin(), attr_view.end());
     m_constitution->active_coeffs.view().copy_from(attr_view.data());
 }
-
 
 
 }  // namespace uipc::backend::cuda

@@ -77,7 +77,7 @@ PyModule::PyModule(py::module& m)
     PyStrainLimitingBaraffWitkinShell{m};
     PyStableNeoHookean{m};
     PyARAP{m};
-    
+
     // Finite Extra Constitutions
     PyFiniteElementExtraConstitution{m};
     PyKirchhoffRodBending{m};

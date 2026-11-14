@@ -22,7 +22,9 @@ StableAnisotropicARAP::StableAnisotropicARAP(const Json& config) noexcept
 {
 }
 
-void StableAnisotropicARAP::apply_to(geometry::SimplicialComplex& sc, Vector3 direction, Float anisotropy_modulus) const
+void StableAnisotropicARAP::apply_to(geometry::SimplicialComplex& sc,
+                                     Vector3                      direction,
+                                     Float anisotropy_modulus) const
 {
     Base::apply_to(sc);
 

@@ -127,7 +127,7 @@ class MeshExporter
                 larva_mesh.tetrahedra().find<double>("muscle_id")->view();
 
             vector<Vector4i> T;
-            vector<int> muscle_ids;
+            vector<int>      muscle_ids;
             for(int i = 0; i < tet_view.size(); ++i)
             {
                 if(muscle_id_view[i] > 0)
@@ -142,8 +142,10 @@ class MeshExporter
             label_triangle_orient(*_muscle_mesh);
 
             // transfer muscle_id from tets to triangles
-            auto parent_id_view = _muscle_mesh->triangles().find<IndexT>("parent_id")->view();
-            auto muscle_id_surface_view = view(*_muscle_mesh->triangles().create<int>("muscle_id"));
+            auto parent_id_view =
+                _muscle_mesh->triangles().find<IndexT>("parent_id")->view();
+            auto muscle_id_surface_view =
+                view(*_muscle_mesh->triangles().create<int>("muscle_id"));
             for(int i = 0; i < parent_id_view.size(); ++i)
                 muscle_id_surface_view[i] = muscle_ids[parent_id_view[i]];
 
@@ -242,7 +244,7 @@ class MeshExporter
         save_npy(fmt::format("{}muscle_vertices{}.npy", output_path, frame_id), muscle_out);
     }
 
-    void muscle_groups_to_json(const std::string &filename)
+    void muscle_groups_to_json(const std::string& filename)
     {
         auto labels_attr = _muscle_surface->triangles().find<int>("muscle_id");
 
@@ -265,7 +267,7 @@ class MeshExporter
             if(muscle_group.size() > 0)
                 muscle_group_data.emplace(std::to_string(i), muscle_group);
         }
-        
+
         std::ofstream file(filename);
         file << muscle_group_data.dump();
     }

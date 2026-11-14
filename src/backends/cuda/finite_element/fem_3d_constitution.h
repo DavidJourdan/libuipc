@@ -8,10 +8,10 @@ class FEM3DConstitution : public FiniteElementConstitution
   public:
     using FiniteElementConstitution::FiniteElementConstitution;
 
-    muda::CBufferView<Vector4i>        element_indices()   const noexcept;
-    muda::CBufferView<Float>           element_energies()  const noexcept;
+    muda::CBufferView<Vector4i>        element_indices() const noexcept;
+    muda::CBufferView<Float>           element_energies() const noexcept;
     muda::CDoubletVectorView<Float, 3> element_gradients() const noexcept;
-    muda::CTripletMatrixView<Float, 3> element_hessians()  const noexcept;
+    muda::CTripletMatrixView<Float, 3> element_hessians() const noexcept;
 
     class BuildInfo
     {

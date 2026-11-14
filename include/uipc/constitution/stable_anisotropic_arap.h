@@ -13,7 +13,7 @@ class UIPC_CONSTITUTION_API StableAnisotropicARAP : public FiniteElementExtraCon
     StableAnisotropicARAP(const Json& config = default_config()) noexcept;
 
     void apply_to(geometry::SimplicialComplex& sc,
-                  Vector3 direction,
+                  Vector3                      direction,
                   Float anisotropy_modulus = 120.0_kPa) const;
 
     static Json default_config() noexcept;

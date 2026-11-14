@@ -14,8 +14,7 @@ void FEM3DExtraConstitution::do_build(FiniteElementExtraConstitution::BuildInfo&
     do_build(this_info);
 }
 
-void FEM3DExtraConstitution::do_compute_energy(
-    FiniteElementExtraConstitution::ComputeEnergyInfo& info)
+void FEM3DExtraConstitution::do_compute_energy(FiniteElementExtraConstitution::ComputeEnergyInfo& info)
 {
     FEM3DExtraConstitution::ComputeEnergyInfo this_info{this, &info, info.dt()};
 
@@ -30,8 +29,7 @@ void FEM3DExtraConstitution::do_compute_energy(
 void FEM3DExtraConstitution::do_compute_gradient_hessian(
     FiniteElementExtraConstitution::ComputeGradientHessianInfo& info)
 {
-    FEM3DExtraConstitution::ComputeGradientHessianInfo this_info{
-        this, &info, info.dt()};
+    FEM3DExtraConstitution::ComputeGradientHessianInfo this_info{this, &info, info.dt()};
 
     // Capture: DoubletVectorView → CDoubletVectorView (implicit)
     m_element_gradients = this_info.gradients();
@@ -55,38 +53,32 @@ void FEM3DExtraConstitution::do_compute_gradient_hessian(
 // slice manually — exactly as in FEM3DConstitution::BaseInfo.
 // ──────────────────────────────────────────────────────────────────────────────
 
-span<const FiniteElementMethod::GeoInfo>
-FEM3DExtraConstitution::BaseInfo::geo_infos() const noexcept
+span<const FiniteElementMethod::GeoInfo> FEM3DExtraConstitution::BaseInfo::geo_infos() const noexcept
 {
     return m_impl->geo_infos();
 }
 
-muda::CBufferView<Vector3>
-FEM3DExtraConstitution::BaseInfo::xs() const noexcept
+muda::CBufferView<Vector3> FEM3DExtraConstitution::BaseInfo::xs() const noexcept
 {
     return m_impl->fem().xs.view();
 }
 
-muda::CBufferView<Vector3>
-FEM3DExtraConstitution::BaseInfo::x_bars() const noexcept
+muda::CBufferView<Vector3> FEM3DExtraConstitution::BaseInfo::x_bars() const noexcept
 {
     return m_impl->fem().x_bars.view();
 }
 
-muda::CBufferView<Vector4i>
-FEM3DExtraConstitution::BaseInfo::indices() const noexcept
+muda::CBufferView<Vector4i> FEM3DExtraConstitution::BaseInfo::indices() const noexcept
 {
     return m_impl->fem().tets.view();
 }
 
-muda::CBufferView<Matrix3x3>
-FEM3DExtraConstitution::BaseInfo::Dm_invs() const noexcept
+muda::CBufferView<Matrix3x3> FEM3DExtraConstitution::BaseInfo::Dm_invs() const noexcept
 {
     return m_impl->fem().Dm3x3_invs.view();
 }
 
-muda::CBufferView<Float>
-FEM3DExtraConstitution::BaseInfo::rest_volumes() const noexcept
+muda::CBufferView<Float> FEM3DExtraConstitution::BaseInfo::rest_volumes() const noexcept
 {
     return m_impl->fem().rest_volumes.view();
 }

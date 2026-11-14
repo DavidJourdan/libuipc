@@ -17,10 +17,10 @@ class StableAnisotropicARAP final : public FEM3DExtraConstitution
 
     using FEM3DExtraConstitution::FEM3DExtraConstitution;
 
-    vector<Float> h_mus;
+    vector<Float>   h_mus;
     vector<Vector3> h_directions;
 
-    muda::DeviceBuffer<Float> mus;
+    muda::DeviceBuffer<Float>   mus;
     muda::DeviceBuffer<Vector3> directions;
 
     virtual U64 get_uid() const noexcept override { return ConstitutionUID; }
@@ -54,7 +54,7 @@ class StableAnisotropicARAP final : public FEM3DExtraConstitution
                 h_mus.resize(primitive_count);
                 h_directions.resize(primitive_count);
 
-                auto mu        = sc.tetrahedra().find<Float>("anisotropy_modulus");
+                auto mu = sc.tetrahedra().find<Float>("anisotropy_modulus");
                 auto direction = sc.tetrahedra().find<Vector3>("direction");
 
                 return zip(mu->view(), direction->view());
@@ -93,10 +93,10 @@ class StableAnisotropicARAP final : public FEM3DExtraConstitution
                     volumes    = info.rest_volumes().viewer().name("volumes"),
                     dt         = info.dt()] __device__(int I)
                    {
-                       const Vector4i&  tet       = indices(I);
-                       const Matrix3x3& Dm_inv    = Dm_invs(I);
-                       Float            anisotropy_modulus        = mus(I);
-                       Vector3          direction = directions(I);
+                       const Vector4i&  tet                = indices(I);
+                       const Matrix3x3& Dm_inv             = Dm_invs(I);
+                       Float            anisotropy_modulus = mus(I);
+                       Vector3          direction          = directions(I);
 
                        const Vector3& x0 = xs(tet(0));
                        const Vector3& x1 = xs(tet(1));
@@ -133,10 +133,10 @@ class StableAnisotropicARAP final : public FEM3DExtraConstitution
                     dt         = info.dt(),
                     gradient_only] __device__(int I) mutable
                    {
-                       const Vector4i&  tet       = indices(I);
-                       const Matrix3x3& Dm_inv    = Dm_invs(I);
-                       Float            anisotropy_modulus        = mus(I);
-                       Vector3          direction = directions(I);
+                       const Vector4i&  tet                = indices(I);
+                       const Matrix3x3& Dm_inv             = Dm_invs(I);
+                       Float            anisotropy_modulus = mus(I);
+                       Vector3          direction          = directions(I);
 
                        const Vector3& x0 = xs(tet(0));
                        const Vector3& x1 = xs(tet(1));
