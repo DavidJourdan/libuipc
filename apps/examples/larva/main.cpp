@@ -184,6 +184,13 @@ int main(int argc, char* argv[])
             std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count());
     }
 
-    save_msh(fmt::format("{}larva_curr.msh", output_path),
-             larva_mesh_slot.geometry->geometry());
+    // Only runs that start from the rest pose (no `curr_geometry`, i.e. drop)
+    // export a hand-off `larva_curr.msh`; runs that *consumed* one (hunch)
+    // would otherwise leave their deformed end-of-run pose in the output
+    // folder, one careless `cp` away from clobbering the committed file.
+    if(!data.contains("curr_geometry"))
+    {
+        save_msh(fmt::format("{}larva_curr.msh", output_path),
+                 larva_mesh_slot.geometry->geometry());
+    }
 }
