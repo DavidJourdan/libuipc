@@ -5,15 +5,81 @@ of this fork; everything else supports it.
 
 ## Build & Run
 
+One-time configure (from the repo root; needs CUDA >= 12.4 and the `CMAKE_TOOLCHAIN_FILE` vcpkg env var):
+
 ```bash
-cmake --build build -j 12 && build/Release/bin/larva <config>.json
+cmake -S . -B build --preset ci-release
 ```
 
-- The config file name is resolved relative to this folder (`CONFIG_FOLDER`).
-  Without an argument, `hunch.json` is used.
-- Requires the CUDA backend (RTX-class GPU); the `none` backend is not
-  exercised by this app.
+Build and run (from the repo root):
+
+```bash
+cmake --build build --target larva -j 12 && build/Release/bin/larva <config>.json
+```
+
+- `--target larva` builds only this app and what it links. A bare
+  `cmake --build build -j 12` also builds every test, example and backend.
+- The config file name is resolved relative to this folder (`CONFIG_FOLDER`),
+  so the binary can be launched from anywhere. Without an argument,
+  `hunch.json` is used.
+- Requires the CUDA backend (RTX-class GPU; `UIPC_WITH_CUDA_BACKEND=ON` is part
+  of the `ci-release` preset); the `none` backend is not exercised by this app.
 - Output goes to `output/examples/larva/main.cpp/` (not `build/`).
+
+XMake parity: `xmake f -c && xmake build -j8 larva`, binary at
+`build/linux/x86_64/release/larva`.
+
+## Testing
+
+There is no Catch2 test for this app — testing it means running the full
+drop → hunch pipeline (see *Two-stage workflow* above) and checking/comparing
+the exported outputs.
+
+### Full pipeline run (from the repo root)
+
+```bash
+# 1. Drop: the larva falls from the original rest pose and settles on the ground
+build/Release/bin/larva drop.json
+# 2. Hand-off: drop's final pose becomes hunch's frame-0 geometry
+cp output/examples/larva/main.cpp/larva_curr.msh apps/examples/larva/larva_curr.msh
+# 3. Hunch: peristalsis driven by muscle_pattern.csv, starting from the settled pose
+build/Release/bin/larva hunch.json
+```
+
+The hunch run is healthy when it exits 0 and writes per-frame
+`*_vertices*.npy` plus `segment_lengths.csv` (both configs set
+`segment_interfaces`) to the shared output folder. Watch stderr for
+`logger::warn` about dropped csv muscles — expected only when the csv and mesh
+muscle sets intentionally differ.
+
+### `larva_curr.msh` hand-off
+
+Only runs that start from the rest pose (no `curr_geometry` key, i.e. drop)
+export `larva_curr.msh` at the end; hunch runs never do. This is deliberate:
+a hunch export would hold the deformed end-of-peristalsis pose, and copying
+that over the committed `apps/examples/larva/larva_curr.msh` would silently
+give every later hunch a wrong frame-0 pose. Consequences:
+
+- Copy the exported file back only after a **drop** run (as in the pipeline
+  above); a hunch run produces nothing to copy.
+- If `larva_curr.msh` was clobbered anyway, the committed copy is
+  git-tracked: recover with `git checkout -- apps/examples/larva/larva_curr.msh`.
+
+### A/B comparison
+
+The sim is **not bit-deterministic between identical runs** (GPU
+contact-solver atomics). Judge diffs against these measured noise floors
+(max |diff| over 102 frames, `hunch.json`):
+
+- raw interface mean-X columns: ~1.8e-05
+- derived segment-length columns: ~1e-06 — these are the sensitive metrics
+
+### Library changes
+
+When the change touches engine/constitution/backend code rather than this app,
+also run the repo test suite, e.g.
+`ctest --test-dir build --build-config Release --label-regex fast --output-on-failure --timeout 900`
+(see the `cmake-workflow` skill for details).
 
 ## Two-stage workflow
 
@@ -54,6 +120,12 @@ python3 pack.py --data ~/code/larva-viewer/data \
   data root (renaming the `0` suffix away). Old simulations whose surface
   vertex count differs will no longer render correctly — that's a viewer
   design limitation.
+- Failure signature: the viewer throws e.g. `muscle: packed file has 42839
+  vertices, mesh has 40288`. The first number is the packed sim's vertex
+  count, the second the static obj's at the data root (`packed.js` compares
+  the two) — they differ only when the root assets are from an older mesh,
+  and the fix is the asset copy above. If the counts on disk already match,
+  the browser is serving a cached obj: hard-refresh.
 
 ## Files
 
@@ -66,7 +138,7 @@ python3 pack.py --data ~/code/larva-viewer/data \
 | `pack.py` | Not in this folder — it lives at `~/code/larva-viewer/pack.py`; it packs the exported `*_vertices*.npy` into `.lvf.gz` for the viewer |
 | `larva.msh` | Rest mesh (tetrahedral, with muscle data) |
 | `larva_curr.msh` | Frame-0 pose for the hunch (from a drop run) |
-| `segment_interfaces.json` | Interface vertex indices on the segment boundary planes (from the pipeline) |
+| `segment_interfaces.json` | Tracked interface vertex indices (band of tet-mesh vertices near each segment boundary plane, from the pipeline) |
 | `muscle_pattern.csv` | Per-muscle activation time series |
 
 ## Mesh format
@@ -84,13 +156,18 @@ pipeline can now emit the mesh directly at simulation scale
 that scale. Rescaling by hand is only needed for meshes produced without
 `--length`.
 
-**Segment interfaces:** `generate_tet_mesh.py` also cuts the mesh along the
-segment boundary planes (T3-A1, A1-A2, A2-A3, A3-A4) so vertices sit exactly
-on them, and writes `segment_interfaces.json` (interface vertex indices +
-which boundary pairs define segment lengths A1..A3). When the config has a
-`segment_interfaces` key, `SegmentTracker` (`segment_tracker.h`) appends the
-mean X of each interface and the A1/A2/A3 lengths (and their change vs
-frame 0) to `segment_lengths.csv` every frame.
+**Segment interfaces:** `generate_tet_mesh.py` writes `segment_interfaces.json`
+(interface vertex indices + which boundary pairs define segment lengths
+A1..A3). The mesh is **not** cut: the tracked vertices are the tet-mesh
+vertices within a small band (`TRACKING_BAND_TOL = 0.005` unscaled) of each
+segment boundary plane (T3-A1, A1-A2, A2-A3, A3-A4) — material points the
+`SegmentTracker` (`segment_tracker.h`) averages per frame. Plane-cutting the
+mesh was tried and reverted: the cut decomposition creates ~1e-9-edge sliver
+tets that destabilize the solve (see *Post-merge vertex pops* below). When the
+config has a `segment_interfaces` key, `SegmentTracker` appends the mean X of
+each interface and the A1/A2/A3 lengths (and their change vs frame 0) to
+`segment_lengths.csv` every frame. Rest-frame lengths carry a small band bias
+(≤ 4e-7, measured) that cancels in the `dlength_*` columns.
 
 ## Muscles & activations
 
@@ -128,8 +205,33 @@ frame 0) to `segment_lengths.csv` every frame.
 | `muscle_contraction_pattern` | Activation csv; presence + `muscle_active > 0` enables muscle control |
 | `segment_interfaces` | Interface vertex-index json; enables the `segment_lengths.csv` export |
 | `nb_frames` | Frame count when muscle control is disabled |
+| `engine_config` | Optional json object deep-merged into the scene config (RFC 7396) — diagnostics/A-B hook for engine keys not surfaced above, e.g. `{"newton": {"semi_implicit": {"enable": 0}}}`. Inert when absent. |
 
 ## Known pitfalls
+
+- **Post-merge vertex pops (2026-11-15 diagnosis; 2026-11-15 resolved — mesh, not engine).** Runs with the merged engine
+  (v0.0.29, Stiff-GIPC alignment) starting from a pose settled by the same
+  engine show single-vertex teleport spikes (~1-8e-6, up to ~600x the frame's
+  median motion), concentrated on one flank, in frames ~30-90 of the hunch.
+  A/B results: unrelated to CUDA-graph PCG replay, broad-phase filter choice,
+  or silent line-search failures (strict mode clean). Setting
+  `engine_config: {"newton": {"semi_implicit": {"enable": 0}, "min_iter": 1}}`
+  removes ~85% of them but roughly doubles per-frame runtime (median
+  548 -> 1206 ms) and exposes a slow lateral COM drift instead. Lateral
+  (z) symmetry breaking is **not** a merge regression: the pre-merge engine
+  drifts COM z by up to ~5e-4 (and the pre-merge-settled `larva_curr.msh` was
+  itself settled ~4.5e-4 off-axis), while post-merge hunch stays within 3.5e-5.
+  **Resolution:** the pops were caused by the rest mesh, not the engine —
+  `larva.msh` (commit 06f1d817) had been sliced along the segment boundary
+  planes by the pipeline, and the cut decomposition manufactures ~8800
+  sliver tets (edges down to ~6e-10 vs `d_hat = 2e-05`). A/B on the same
+  fTetWild output: the uncut twin shows 0 jump frames (ratio max ~28) and
+  settles symmetrically. The pipeline now tracks interfaces via vertex
+  bands instead of cutting (see *Segment interfaces* above), and the app
+  mesh was swapped to the uncut one.
+  Analysis tooling: `output/larva_debug/analyze_run.py` (jump/symmetry/COM
+  metrics from a run's npy frames); the A/B evidence lives in
+  `output/larva_debug/ab_*` (cut vs nocut vs band variants).
 
 - A mesh starting below `ground_height` aborts init with
   "Geometry is too close (distance <= 0) to HalfPlane" (check the mesh scale).
