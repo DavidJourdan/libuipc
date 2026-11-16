@@ -2,7 +2,6 @@
 #include <cuda_tool/cuda_tool.h>
 #include <finite_element/constitutions/muscle_function.h>
 #include <finite_element/fem_3d_extra_constitution.h>
-#include <finite_element/fem_exporter.h>
 #include <finite_element/fem_utils.h>
 #include <Eigen/Dense>
 #include <utils/make_spd.h>

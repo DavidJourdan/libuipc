@@ -13,11 +13,11 @@
 #include <pyuipc/core/sanity_checker.h>
 #include <pyuipc/core/feature_collection.h>
 #include <pyuipc/core/contact_system_feature.h>
+#include <pyuipc/core/fem_system_feature.h>
 #include <pyuipc/core/subscene_tabular.h>
 #include <pyuipc/core/state_accessor_feature.h>
 #include <pyuipc/core/distance_diagnoser_feature.h>
 #include <pyuipc/core/muscle_controller_feature.h>
-#include <pyuipc/core/fem_system_feature.h>
 
 namespace pyuipc::core
 {

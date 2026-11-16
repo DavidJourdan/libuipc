@@ -9,13 +9,15 @@ class FEMExporterManager;
 class FEMSystemFeatureOverrider final : public core::FEMSystemFeatureOverrider
 {
   public:
-    FEMSystemFeatureOverrider(FEMExporterManager* fem_system);
+    FEMSystemFeatureOverrider(FEMExporterManager* exporter_manager);
 
   private:
-    void get_fem_gradient(U64 uid, geometry::Geometry& vert_grad) override;
-    void get_fem_hessian(U64 uid, geometry::Geometry& vert_hess) override;
-    void get_fem_energy(U64 uid, geometry::Geometry& prims) override;
+    void get_fem_energy(U64 uid, geometry::Geometry& prim_energy) override;
+    void get_fem_gradient(U64 uid, geometry::Geometry& prim_grad) override;
+    void get_fem_hessian(U64 uid, geometry::Geometry& prim_hess) override;
+    void get_fem_vertex_gradient(U64 uid, geometry::SimplicialComplex& vert_grad) override;
+    vector<U64> get_fem_constitution_uids() const override;
 
-    SimSystemSlot<FEMExporterManager> m_manager;
+    SimSystemSlot<FEMExporterManager> m_exporter_manager;
 };
 }  // namespace uipc::backend::cuda
