@@ -16,20 +16,14 @@ using namespace uipc::core;
 using namespace uipc::geometry;
 using namespace uipc::constitution;
 
-// Per-frame energy bookkeeping via FEMSystemFeature/ContactSystemFeature
-// (issue #344). Every write_row() appends the elastic energies of both
-// constitutions (SNH + Muscle), the kinetic energy, the gravitational
-// potential energy and the contact (IPC barrier) energy to a csv file.
-//
-// The exports carry the solver's dt^2 incremental-potential scaling and are
-// divided by dt^2 here. `elastic_energy` is relative to the frame-0 pose:
-// a drop run starts at the rest pose, so the frame-0 elastic energy is
-// exactly the constitutions' constant rest offset (SNK1's nonzero Psi(I)
-// plus the Muscle passive rest energy); a hunch run starts from the
-// settled pose, so the offset is the settled strain.
-//
-// Enabled by constructing with the scene data; a default-constructed
-// logger (no "export_energy" key in the json config) is a no-op.
+// Per-frame energy bookkeeping: every write_row() appends the elastic
+// energies of both constitutions (SNH + Muscle), the kinetic energy, the
+// gravitational potential energy and the contact energy to a csv file.
+// The exports carry the solver's dt^2 incremental-potential scaling and
+// are divided by dt^2 here; `elastic_energy` is relative to the frame-0
+// pose (the constitutions' rest offset for a drop run).
+// Enabled by the "export_energy" config key; a default-constructed
+// logger is a no-op.
 class EnergyLogger
 {
   public:
@@ -106,8 +100,15 @@ class EnergyLogger
         // frame-0 elastic energies, the offset subtracted from every
         // later `elastic_energy` value
         _fem_state->copy_to(*_state_geo);
-        _snh_offset    = _fem_energy_sum(_snh_uid) / (_dt * _dt);
-        _muscle_offset = _fem_energy_sum(_muscle_uid) / (_dt * _dt);
+        SizeT snh_elements    = 0;
+        SizeT muscle_elements = 0;
+        _snh_offset    = _fem_energy_sum(_snh_uid, &snh_elements) / (_dt * _dt);
+        _muscle_offset = _fem_energy_sum(_muscle_uid, &muscle_elements) / (_dt * _dt);
+
+        fmt::print("EnergyLogger: {} SNH + {} Muscle elements, {} vertices\n",
+                   snh_elements,
+                   muscle_elements,
+                   _vertex_mass.size());
     }
 
     // Appends the energies at the backend's current state. No-op for a
@@ -183,12 +184,14 @@ class EnergyLogger
     }
 
   private:
-    // total elastic energy of one constitution, dt^2-scaled like the
-    // solver's incremental potential
-    Float _fem_energy_sum(U64 uid)
+    // total elastic energy of one constitution (dt^2-scaled); when given,
+    // *element_count receives the number of exported elements
+    Float _fem_energy_sum(U64 uid, SizeT* element_count = nullptr)
     {
         Geometry geo;
         _fem_system->fem_energy(uid, geo);
+        if(element_count)
+            *element_count = geo.instances().size();
         auto e = geo.instances().find<Float>("energy");
         if(!e)
             return 0.0;
