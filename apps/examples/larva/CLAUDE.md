@@ -135,6 +135,7 @@ python3 pack.py --data ~/code/larva-viewer/data \
 | `read_activation_csv.h` | CSV parsing, resampling to `dt` |
 | `mesh_export.h` | `MeshExporter` (npy vertex export, msh save, muscle-group json) |
 | `segment_tracker.h` | `SegmentTracker` (segment_lengths.csv export from interface vertex ids) |
+| `fem_energy.csv` (output) | Per-frame energy bookkeeping via `FEMSystemFeature`: SNH and Muscle elastic energies (both divided by the exports' dt^2 scaling), kinetic, gravitational potential (datum at the ground plane) and contact energy. `elastic_energy` is relative to the frame-0 pose — for a drop run the constitutions' rest offset (SNK1's nonzero rest energy plus the Muscle passive rest energy) is subtracted, so it starts at 0. Read from Python with `numpy.genfromtxt(..., names=True)`. |
 | `pack.py` | Not in this folder — it lives at `~/code/larva-viewer/pack.py`; it packs the exported `*_vertices*.npy` into `.lvf.gz` for the viewer |
 | `larva.msh` | Rest mesh (tetrahedral, with muscle data) |
 | `larva_curr.msh` | Frame-0 pose for the hunch (from a drop run) |

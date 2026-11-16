@@ -39,6 +39,16 @@
 > unknown-uid tolerance; plus `apps/examples/fem_export/`. Aggregate run:
 > 96/97 cases; only the previously recorded case-86 plastic-bending failure
 > (see 2026-11-05 entry) reproduces identically, i.e. not a regression.
+> 2026-11-16: merged into the `app` branch, replacing the WIP FEMExporter
+> hack (`fem_exporter.{h,cu}` and the per-constitution exporter subclasses
+> removed; Muscle / muscle controller / anisotropic ARAP kept). The larva
+> app now writes `fem_energy.csv` per frame (SNH + Muscle elastic, kinetic,
+> potential, contact; dt^2 divided; frame-0 offset subtracted). Drop-run
+> validation on the real mesh (384,762 tets): the exported SNH rest energy
+> equals the analytic `mu^2/(2 lambda_hat) * V` to float precision, the
+> Muscle extra-constitution path exports nonzero finite energies, export
+> cost 3.7 ms/call; total energy is constant to 2e-5 relative once at rest,
+> with the expected non-symplectic loss during the impact frames.
 > Local clang-format is 19 vs CI's 18. Open questions are collected in the
 > untracked summary file `FEM_DATA_EXPORT_SUMMARY.md` at the repo root.
 
