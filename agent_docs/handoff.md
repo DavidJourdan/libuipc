@@ -42,13 +42,20 @@
 > 2026-11-16: merged into the `app` branch, replacing the WIP FEMExporter
 > hack (`fem_exporter.{h,cu}` and the per-constitution exporter subclasses
 > removed; Muscle / muscle controller / anisotropic ARAP kept). The larva
-> app now writes `fem_energy.csv` per frame (SNH + Muscle elastic, kinetic,
-> potential, contact; dt^2 divided; frame-0 offset subtracted). Drop-run
-> validation on the real mesh (384,762 tets): the exported SNH rest energy
-> equals the analytic `mu^2/(2 lambda_hat) * V` to float precision, the
-> Muscle extra-constitution path exports nonzero finite energies, export
-> cost 3.7 ms/call; total energy is constant to 2e-5 relative once at rest,
-> with the expected non-symplectic loss during the impact frames.
+> app's energy bookkeeping lives in `apps/examples/larva/energy_logger.h`
+> (`EnergyLogger`), enabled by the `export_energy` config key and a
+> default-constructed no-op otherwise; it writes `fem_energy.csv` per frame
+> (SNH + Muscle elastic, kinetic, potential, contact; dt^2 divided;
+> frame-0 offset subtracted). Drop-run validation on the real mesh
+> (384,762 tets): the exported SNH rest energy equals the analytic
+> `mu^2/(2 lambda_hat) * V` to float precision, the Muscle
+> extra-constitution path exports nonzero finite energies, export cost
+> 3.7 ms/call. Higher-drop test (ground_height -0.02, 0.02 m free fall):
+> the per-step total drain in free fall is 1.39e-8 J, matching the analytic
+> BDF1 bookkeeping artifact `1/2 m g^2 dt^2` = 1.38e-8 J to <1% — not
+> noise: once at rest the total is constant to ~1e-12 J/step (1e-4
+> relative); the impact then genuinely dissipates the full 3.45e-7 J of
+> kinetic energy within ~2 steps (non-symplectic integrator + barrier).
 > Local clang-format is 19 vs CI's 18. Open questions are collected in the
 > untracked summary file `FEM_DATA_EXPORT_SUMMARY.md` at the repo root.
 

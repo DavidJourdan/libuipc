@@ -135,7 +135,7 @@ python3 pack.py --data ~/code/larva-viewer/data \
 | `read_activation_csv.h` | CSV parsing, resampling to `dt` |
 | `mesh_export.h` | `MeshExporter` (npy vertex export, msh save, muscle-group json) |
 | `segment_tracker.h` | `SegmentTracker` (segment_lengths.csv export from interface vertex ids) |
-| `fem_energy.csv` (output) | Per-frame energy bookkeeping via `FEMSystemFeature`: SNH and Muscle elastic energies (both divided by the exports' dt^2 scaling), kinetic, gravitational potential (datum at the ground plane) and contact energy. `elastic_energy` is relative to the frame-0 pose — for a drop run the constitutions' rest offset (SNK1's nonzero rest energy plus the Muscle passive rest energy) is subtracted, so it starts at 0. Read from Python with `numpy.genfromtxt(..., names=True)`. |
+| `energy_logger.h` | `EnergyLogger` (per-frame `fem_energy.csv` energy bookkeeping via `FEMSystemFeature`/`ContactSystemFeature`; enabled by the `export_energy` config key, a default-constructed no-op otherwise) |
 | `pack.py` | Not in this folder — it lives at `~/code/larva-viewer/pack.py`; it packs the exported `*_vertices*.npy` into `.lvf.gz` for the viewer |
 | `larva.msh` | Rest mesh (tetrahedral, with muscle data) |
 | `larva_curr.msh` | Frame-0 pose for the hunch (from a drop run) |
@@ -206,6 +206,7 @@ each interface and the A1/A2/A3 lengths (and their change vs frame 0) to
 | `muscle_contraction_pattern` | Activation csv; presence + `muscle_active > 0` enables muscle control |
 | `segment_interfaces` | Interface vertex-index json; enables the `segment_lengths.csv` export |
 | `nb_frames` | Frame count when muscle control is disabled |
+| `export_energy` | bool; enables the `EnergyLogger` (`energy_logger.h`): per-frame `fem_energy.csv` with the SNH and Muscle elastic energies (divided by the exports' dt^2 scaling), kinetic, gravitational potential (datum at the ground plane) and contact energy. `elastic_energy` is relative to the frame-0 pose — for a drop run the constitutions' rest offset (SNK1's nonzero rest energy plus the Muscle passive rest energy) is subtracted, so it starts at 0. Read from Python with `numpy.genfromtxt(..., names=True)`. |
 | `engine_config` | Optional json object deep-merged into the scene config (RFC 7396) — diagnostics/A-B hook for engine keys not surfaced above, e.g. `{"newton": {"semi_implicit": {"enable": 0}}}`. Inert when absent. |
 
 ## Known pitfalls
