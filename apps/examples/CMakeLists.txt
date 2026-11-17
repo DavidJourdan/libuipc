@@ -1,5 +1,4 @@
 add_subdirectory(hello_affine_body)
-add_subdirectory(larva)
 add_subdirectory(fem_export)
 add_subdirectory(hello_simplicial_complex)
 if(UIPC_WITH_CUDA_BACKEND)

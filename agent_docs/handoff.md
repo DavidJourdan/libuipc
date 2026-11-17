@@ -56,6 +56,13 @@
 > noise: once at rest the total is constant to ~1e-12 J/step (1e-4
 > relative); the impact then genuinely dissipates the full 3.45e-7 J of
 > kinetic energy within ~2 steps (non-symplectic integrator + barrier).
+> 2026-11-17: the larva example app moved out of this repo into the
+> standalone `~/code/larva-simulator` CMake project (FetchContent on this
+> fork's `app` branch, since Muscle lives only here); `apps/examples/larva/`
+> is removed. The `EnergyLogger`, the drop/hunch pipeline and the mesh data
+> live there now, validated bit-identical to the in-repo run (same element
+> counts, SNH rest energy and export cost). The FEM export feature itself is
+> unchanged and still covered by sim case 94 and `fem_export`.
 > Local clang-format is 19 vs CI's 18. Open questions are collected in the
 > untracked summary file `FEM_DATA_EXPORT_SUMMARY.md` at the repo root.
 
